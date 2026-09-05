@@ -17,7 +17,6 @@ end
 reaper.PreventUIRefresh(1)
 reaper.Undo_BeginBlock2(0)
 
-L.renumber_scenes()
 local scene = L.create_scene(bars)
 L.set_loop_to(scene)
 

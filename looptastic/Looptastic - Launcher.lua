@@ -74,14 +74,12 @@ end
 
 local function new_scene(bars)
     undoable("Looptastic: New scene", function()
-        L.renumber_scenes()
         L.set_loop_to(L.create_scene(bars))
     end)
 end
 
 local function duplicate_scene(source)
     undoable("Looptastic: Duplicate scene", function()
-        L.renumber_scenes()
         L.set_loop_to(L.duplicate_scene(source))
     end)
 end
@@ -159,29 +157,34 @@ local function scene_menu(scene, scenes)
     local scene_count = #scenes
     local has_next = scene.num < scene_count
     local in_chain = #L.link_chain(scene, scenes) >= 2
-    local items = { "Rename...", "Set length...", "Duplicate", "" }
-    local link_idx
-    if has_next then
-        items[#items + 1] = scene.linked and "Unlink from next" or "Link with next"
-        link_idx = #items
+
+    -- gfx.showmenu's returned choice only counts selectable items, not the
+    -- blank "||" separators, so indices must be tracked alongside them here
+    -- rather than assumed from the items array's own length
+    local items, idx = {}, 0
+    local function add(label)
+        items[#items + 1] = label
+        idx = idx + 1
+        return idx
     end
-    local merge_idx
-    if in_chain then
-        items[#items + 1] = "Merge linked scenes"
-        merge_idx = #items
-    end
-    items[#items + 1] = ""
-    items[#items + 1] = "Delete scene and its items"
-    local delete_all_idx = #items
-    items[#items + 1] = "Delete scene, keep items"
-    local delete_keep_idx = #items
+    local function add_sep() items[#items + 1] = "" end
+
+    local rename_idx = add("Rename...")
+    local resize_idx = add("Set length...")
+    local dup_idx = add("Duplicate")
+    add_sep()
+    local link_idx = has_next and add(scene.linked and "Unlink from next" or "Link with next") or nil
+    local merge_idx = in_chain and add("Merge linked scenes") or nil
+    add_sep()
+    local delete_all_idx = add("Delete scene and its items")
+    local delete_keep_idx = add("Delete scene, keep items")
 
     local choice = gfx.showmenu(table.concat(items, "|"))
-    if choice == 1 then rename_scene(scene)
-    elseif choice == 2 then resize_scene(scene, scene_count)
-    elseif choice == 3 then duplicate_scene(scene)
-    elseif has_next and choice == link_idx then toggle_link(scene)
-    elseif in_chain and choice == merge_idx then merge_chain(scene, scenes)
+    if choice == rename_idx then rename_scene(scene)
+    elseif choice == resize_idx then resize_scene(scene, scene_count)
+    elseif choice == dup_idx then duplicate_scene(scene)
+    elseif link_idx and choice == link_idx then toggle_link(scene)
+    elseif merge_idx and choice == merge_idx then merge_chain(scene, scenes)
     elseif choice == delete_all_idx then delete_scene(scene, false)
     elseif choice == delete_keep_idx then delete_scene(scene, true)
     end

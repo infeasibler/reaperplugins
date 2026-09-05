@@ -84,14 +84,13 @@ end
 
 -- ----------------------------------------------------------- scene model
 
-local function scene_pattern()
-    return "^" .. M.SCENE_PREFIX .. "%s+(%d+)%s*(.-)%s*$"
-end
-
--- All scene regions ordered by timeline position; `num` is the positional number.
--- A trailing " >>" in the region name marks the scene as linked to its
--- immediate successor (see M.link_chain); it's stripped out of `label` so
--- rename dialogs never see it.
+-- Every region is treated as a scene, whatever it's named - the user can
+-- create/rename regions directly in REAPER's timeline/Region Manager and
+-- Looptastic will pick them up. `num` is the positional (timeline) number,
+-- computed fresh each scan rather than stored in the name. A trailing " >>"
+-- in the region name marks the scene as linked to its immediate successor
+-- (see M.link_chain); it's stripped out of `label` so rename dialogs and the
+-- launcher's list never show it.
 function M.scan_scenes()
     local scenes = {}
     local i = 0
@@ -99,15 +98,12 @@ function M.scan_scenes()
         local retval, isrgn, pos, rgnend, name, markrgnindex, color = reaper.EnumProjectMarkers3(0, i)
         if retval == 0 then break end
         if isrgn then
-            local _, label = name:match(scene_pattern())
-            if label then
-                local linked = label:match(">>%s*$") ~= nil
-                if linked then label = label:gsub("%s*>>%s*$", "") end
-                scenes[#scenes + 1] = {
-                    enum_idx = i, pos = pos, rgnend = rgnend,
-                    name = name, label = label, linked = linked, id = markrgnindex, color = color,
-                }
-            end
+            local linked = name:match(">>%s*$") ~= nil
+            local label = linked and name:gsub("%s*>>%s*$", "") or name
+            scenes[#scenes + 1] = {
+                enum_idx = i, pos = pos, rgnend = rgnend,
+                name = name, label = label, linked = linked, id = markrgnindex, color = color,
+            }
         end
         i = i + 1
     end
@@ -116,10 +112,11 @@ function M.scan_scenes()
     return scenes
 end
 
-function M.scene_name(n, label, linked)
-    local base = (label and label ~= "")
-        and (M.SCENE_PREFIX .. " " .. n .. " " .. label)
-        or (M.SCENE_PREFIX .. " " .. n)
+-- Builds a region name from a (user-chosen, possibly empty) label plus the
+-- link-chain suffix. Unlike scene numbers, labels are never rewritten by
+-- Looptastic on its own - only explicit renames or link toggles touch them.
+function M.scene_name(label, linked)
+    local base = label or ""
     return linked and (base .. " >>") or base
 end
 
@@ -127,22 +124,15 @@ local function write_scene(s, name)
     reaper.SetProjectMarkerByIndex2(0, s.enum_idx, true, s.pos, s.rgnend, s.id, name, s.color, 0)
 end
 
-function M.renumber_scenes()
-    for _, s in ipairs(M.scan_scenes()) do
-        local wanted = M.scene_name(s.num, s.label, s.linked)
-        if s.name ~= wanted then write_scene(s, wanted) end
-    end
-end
-
 function M.rename_scene(scene, label)
-    write_scene(scene, M.scene_name(scene.num, label, scene.linked))
+    write_scene(scene, M.scene_name(label, scene.linked))
 end
 
 -- Only the last scene can be resized; earlier ones would overlap their neighbour.
 function M.set_scene_length(scene, bars)
     local stop = M.bars_to_time(scene.pos, bars)
     reaper.SetProjectMarkerByIndex2(0, scene.enum_idx, true, scene.pos, stop, scene.id,
-        M.scene_name(scene.num, scene.label, scene.linked), scene.color, 0)
+        M.scene_name(scene.label, scene.linked), scene.color, 0)
     return stop
 end
 
@@ -153,7 +143,7 @@ function M.is_linked_to_next(scene)
 end
 
 function M.set_linked_to_next(scene, linked)
-    write_scene(scene, M.scene_name(scene.num, scene.label, linked))
+    write_scene(scene, M.scene_name(scene.label, linked))
 end
 
 -- The full ordered chain of consecutive linked scenes containing `scene`,
@@ -214,9 +204,8 @@ function M.merge_chain(scene, scenes)
     local head = find(head_pos)
     if head then
         reaper.SetProjectMarkerByIndex2(0, head.enum_idx, true, head.pos, tail_rgnend, head.id,
-            M.scene_name(head.num, head.label, false), head.color, 0)
+            M.scene_name(head.label, false), head.color, 0)
     end
-    M.renumber_scenes()
     return head and { pos = head.pos, rgnend = tail_rgnend, name = head.name, num = head.num }
 end
 
@@ -235,7 +224,6 @@ function M.delete_scene(scene, keep_items)
         end
     end
     reaper.DeleteProjectMarkerByIndex(0, scene.enum_idx)
-    M.renumber_scenes()
 end
 
 function M.is_playing()
@@ -387,12 +375,16 @@ end
 
 -- ---------------------------------------------------------------- scenes
 
+-- The new scene's default name is derived purely from how many scene
+-- regions currently exist, regardless of what those existing regions are
+-- named - so a user free-renaming regions in the Region Manager doesn't
+-- disrupt numbering of ones created afterwards via Looptastic actions.
 function M.create_scene(bars)
     local cfg = M.get_config()
     local scenes = M.scan_scenes()
     local start = (#scenes > 0) and scenes[#scenes].rgnend or M.snap_to_bar(0)
     local stop = M.bars_to_time(start, bars)
-    local name = M.scene_name(#scenes + 1)
+    local name = M.SCENE_PREFIX .. " " .. (#scenes + 1)
     reaper.AddProjectMarker2(0, true, start, stop, name, -1, M.region_color(cfg))
     return { pos = start, rgnend = stop, name = name, num = #scenes + 1 }
 end

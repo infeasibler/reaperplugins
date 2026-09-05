@@ -13,7 +13,6 @@ end
 reaper.PreventUIRefresh(1)
 reaper.Undo_BeginBlock2(0)
 
-L.renumber_scenes()
 local scene = L.duplicate_scene(source)
 L.set_loop_to(scene)
 
