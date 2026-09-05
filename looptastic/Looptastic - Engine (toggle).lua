@@ -22,30 +22,6 @@ local last_scene_pos = (function()
 end)()
 
 local next_poll = 0
-local last_play_pos = -1
-
--- A queued scene takes over at the bar line the launcher recorded, or on loop wrap.
-local function service_queue()
-    local q = L.get_queue()
-    if not q then
-        last_play_pos = -1
-        return false
-    end
-    if not L.is_playing() then
-        L.fire_queue(q)
-        return true
-    end
-    -- GetPlayPosition2 tracks the engine's next-block position rather than the
-    -- latency-delayed audible position, so the fire lands on the bar instead of after it.
-    local pos = reaper.GetPlayPosition2()
-    local wrapped = last_play_pos >= 0 and pos < last_play_pos - 1e-6
-    last_play_pos = pos
-    if pos >= q.fire - 1e-6 or wrapped then
-        L.fire_queue(q)
-        last_scene_pos = q.pos
-    end
-    return true
-end
 
 local function follow()
     local cfg = L.get_config()
@@ -84,7 +60,7 @@ local function loop()
     local now = reaper.time_precise()
     if now >= next_poll then
         next_poll = now + (L.get_config().poll_interval)
-        if not service_queue() then follow() end
+        follow()
     end
     reaper.defer(loop)
 end

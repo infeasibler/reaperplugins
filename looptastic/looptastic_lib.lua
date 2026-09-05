@@ -25,7 +25,7 @@ function M.get_config()
         color_r             = tonumber(r), color_g = tonumber(g), color_b = tonumber(b),
         follow_enabled      = ext_get("follow_enabled", "1") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
-        poll_interval       = tonumber(ext_get("poll_interval", "0.03")) or 0.03,
+        poll_interval       = tonumber(ext_get("poll_interval", "0.008")) or 0.008,
     }
 end
 
@@ -35,6 +35,17 @@ end
 
 function M.region_color(cfg)
     return reaper.ColorToNative(cfg.color_r, cfg.color_g, cfg.color_b) | 0x1000000
+end
+
+-- REAPER's own "smooth seek" playback preference fights our bar-quantized scene
+-- firing, causing a double seek/click; expose it so it can be disabled from here.
+function M.get_smooth_seek()
+    local ok, value = reaper.get_config_var_string("smoothseek")
+    return ok and value ~= "0"
+end
+
+function M.set_smooth_seek(enabled)
+    reaper.set_config_var_string("smoothseek", enabled and "1" or "0", 1)
 end
 
 -- ------------------------------------------------------------- bar maths
@@ -205,10 +216,8 @@ function M.queue_scene(scene)
         M.jump_to(scene)
         return
     end
-    reaper.SetExtState(M.EXT_SECTION, "queue_start", tostring(scene.pos), false)
-    reaper.SetExtState(M.EXT_SECTION, "queue_end", tostring(scene.rgnend), false)
-    reaper.SetExtState(M.EXT_SECTION, "queue_fire",
-        tostring(M.snap_to_bar(reaper.GetPlayPosition(), "next")), false)
+    -- smooth seek is off, so REAPER will quantize the seek to bar end automatically
+    M.fire_queue({ pos = scene.pos, rgnend = scene.rgnend, fire = -1 })
 end
 
 function M.get_queue()
@@ -233,8 +242,8 @@ end
 
 function M.fire_queue(q)
     M.clear_queue()
-    -- autoseek only kicks in when playback is already outside the new range, which is
-    -- never true here (we fire once pos reaches q.pos) - so seek explicitly every time.
+    -- allowautoseek is unreliable here (pos often already inside the new range by the
+    -- time this runs), so seek explicitly every time to guarantee correct restart/position.
     reaper.GetSet_LoopTimeRange2(0, true, true, q.pos, q.rgnend, false)
     -- avoid re-asserting repeat every fire; toggling an already-set state can glitch transport
     if reaper.GetSetRepeat(-1) ~= 1 then reaper.GetSetRepeat(1) end

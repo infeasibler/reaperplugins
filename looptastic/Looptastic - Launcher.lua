@@ -192,11 +192,6 @@ local function draw_scene_list(scenes, top, height, queue)
 end
 
 local function draw_status(y, queue)
-    if queue then
-        draw_label(string.format("Queued - %.1f beats", L.beats_until(queue.fire)),
-            PAD, y, gfx.w - PAD * 2, 20, COLOR.queued)
-        return
-    end
     local running = engine_running()
     if button(PAD, y, gfx.w - PAD * 2, 20,
             running and "Engine on" or "Engine off - click to start",
@@ -227,12 +222,18 @@ local function draw_settings(y, cfg)
     if button(PAD, y + (step + ROW.gap) * 2, w, step, confirm_label) then
         L.set_config("confirm_destructive", cfg.confirm_destructive and "0" or "1")
     end
+
+    local smooth_seek = L.get_smooth_seek()
+    local smooth_label = (smooth_seek and "[x] " or "[ ] ") .. "Smooth seek (check for smooth transitions)"
+    if button(PAD, y + (step + ROW.gap) * 3, w, step, smooth_label) then
+        L.set_smooth_seek(not smooth_seek)
+    end
 end
 
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, queue, cfg)
     local w = gfx.w - PAD * 2
-    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) - (24 + ROW.gap) * 2 - (22 + ROW.gap)
+    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 2 - (24 + ROW.gap) * 2 - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end
