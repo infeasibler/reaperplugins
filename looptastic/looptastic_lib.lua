@@ -347,6 +347,10 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
                 local end_qn = reaper.TimeMap2_timeToQN(0, snapped_end)
                 reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
             else
+                -- disable loop-source first, else REAPER auto-repeats the take
+                -- from its raw recorded end when the item is grown past it -
+                -- we want silence there instead, since we tile bars ourselves
+                reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
                 reaper.SetMediaItemLength(item, snapped_end - snapped_pos, true)
             end
             reaper.UpdateItemInProject(item)
@@ -367,6 +371,11 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
             end
 
             processed = processed + 1
+        else
+            -- entirely a pickup with no room left in the scene for even a
+            -- partial bar (e.g. engine follow() moved the loop mid-record) -
+            -- it's noise, not something to leave in the project untouched
+            reaper.DeleteTrackMediaItem(track, item)
         end
     end
     return processed
