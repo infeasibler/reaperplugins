@@ -59,11 +59,14 @@ function M.measure_start_time(measure)
     return reaper.TimeMap2_beatsToTime(0, 0.0, measure)
 end
 
--- Start of the bar containing `time`; mode "next" rounds up unless already on a bar.
-function M.snap_to_bar(time, mode)
+-- Start of the bar containing `time`; mode "next" rounds up unless already on a
+-- bar (within `tolerance`, so a small overshoot past a boundary snaps back to it
+-- instead of rounding all the way up to the next bar).
+function M.snap_to_bar(time, mode, tolerance)
+    tolerance = tolerance or 1e-9
     local measure = M.measure_at(time)
     local at = M.measure_start_time(measure)
-    if mode == "next" and math.abs(time - at) > 1e-9 then
+    if mode == "next" and (time - at) > tolerance then
         return M.measure_start_time(measure + 1)
     end
     return at
@@ -362,7 +365,10 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
         local track, item, pos = target.track, target.item, target.pos
         local snapped_pos = math.min(scene.rgnend, math.max(scene.pos, M.snap_to_bar(pos, "next")))
         local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-        local snapped_end = math.min(scene.rgnend, M.snap_to_bar(recorded_end, "next"))
+        -- a small overshoot past a bar (e.g. from the quantized-stop margin, or
+        -- just late-stopping) should trim back to that bar, not pad a whole
+        -- extra one on top of it
+        local snapped_end = math.min(scene.rgnend, M.snap_to_bar(recorded_end, "next", 0.2))
         if snapped_end <= snapped_pos + 1e-9 then
             snapped_end = math.min(scene.rgnend, M.bars_to_time(snapped_pos, 1))
         end
