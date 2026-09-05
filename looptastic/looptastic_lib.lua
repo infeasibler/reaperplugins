@@ -291,11 +291,13 @@ function M.snapshot_item_guids()
     return guids
 end
 
--- Recording starts immediately (not bar-aligned), so new items are physically
--- split at the bar boundaries rather than just resized - a transient D_LENGTH/
--- B_LOOPSRC toggle doesn't reliably truncate a MIDI take's source length, so
--- splitting (which REAPER truncates correctly for both audio and MIDI) is used
--- to cut the pickup before the first full bar and the tail after the last one.
+-- Recording starts immediately (not bar-aligned), so the new item is physically
+-- split/trimmed to one bar (MIDI_SetItemExtents for MIDI takes, since resizing
+-- D_LENGTH alone doesn't update a MIDI take's own PPQ-based extents), then that
+-- one-bar unit is physically duplicated across the rest of the scene - B_LOOPSRC
+-- isn't used since its repeat unit also follows the take's own extents, not D_LENGTH.
+local cloned_chunk
+
 function M.apply_loop_source_to_new_items(existing_guids, scene)
     if not existing_guids or not scene then return 0 end
 
@@ -335,16 +337,42 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
                 local right = reaper.SplitMediaItem(item, snapped_end)
                 if right then reaper.DeleteTrackMediaItem(track, right) end
             end
-            reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 1)
-            reaper.SetMediaItemInfo_Value(item, "D_LENGTH", scene_length)
+            -- For MIDI, D_LENGTH/SetMediaItemLength don't touch the take's own
+            -- PPQ-based extents (visible in Item Properties), so growing a
+            -- short take leaves it reporting its old, un-padded length;
+            -- MIDI_SetItemExtents is the API that actually updates that.
+            local take = reaper.GetActiveTake(item)
+            if take and reaper.TakeIsMIDI(take) then
+                local start_qn = reaper.TimeMap2_timeToQN(0, snapped_pos)
+                local end_qn = reaper.TimeMap2_timeToQN(0, snapped_end)
+                reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
+            else
+                reaper.SetMediaItemLength(item, snapped_end - snapped_pos, true)
+            end
             reaper.UpdateItemInProject(item)
+
+            local unit = snapped_end - snapped_pos
+            local dest = snapped_end
+            while dest < scene.rgnend - 1e-9 do
+                local chunk = cloned_chunk(item)
+                if not chunk then break end
+                local tile = reaper.AddMediaItemToTrack(track)
+                reaper.SetItemStateChunk(tile, chunk, false)
+                reaper.SetMediaItemInfo_Value(tile, "D_POSITION", dest)
+                if dest + unit > scene.rgnend + 1e-9 then
+                    local right = reaper.SplitMediaItem(tile, scene.rgnend)
+                    if right then reaper.DeleteTrackMediaItem(track, right) end
+                end
+                dest = dest + unit
+            end
+
             processed = processed + 1
         end
     end
     return processed
 end
 
-local function cloned_chunk(item)
+cloned_chunk = function(item)
     local ok, chunk = reaper.GetItemStateChunk(item, "", false)
     if not ok then return nil end
     return (chunk:gsub("\n([ \t]*)(I?GUID) {[^}]*}", function(indent, tag)

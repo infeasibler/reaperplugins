@@ -96,7 +96,9 @@ local function loop()
     local now = reaper.time_precise()
     if now >= next_poll then
         next_poll = now + (L.get_config().poll_interval)
-        follow()
+        -- an uncaught error here would otherwise kill the whole defer chain silently
+        local ok, err = pcall(follow)
+        if not ok then reaper.ShowConsoleMsg("Looptastic engine error: " .. tostring(err) .. "\n") end
     end
     reaper.defer(loop)
 end
