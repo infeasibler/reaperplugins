@@ -9,16 +9,16 @@
 			<version name="0.1.0" author="infeasibler" time="2026-09-05T00:00:00Z">
 				<changelog><![CDATA[Initial Scenery release.]]></changelog>
 				<source main="main" type="script" file="Scenery - Launcher.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Launcher.lua</source>
-				<source type="script" file="Scenery - New scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene.lua</source>
-				<source type="script" file="Scenery - New scene (custom bars).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene%20(custom%20bars).lua</source>
-				<source type="script" file="Scenery - Clone current scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Clone%20current%20scene.lua</source>
-				<source type="script" file="Scenery - Copy current scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Copy%20current%20scene.lua</source>
-				<source type="script" file="Scenery - Go to next scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Go%20to%20next%20scene.lua</source>
-				<source type="script" file="Scenery - Go to previous scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Go%20to%20previous%20scene.lua</source>
-				<source type="script" file="Scenery - Settings.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Settings.lua</source>
-				<source type="script" file="Scenery - Toggle link with next scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Toggle%20link%20with%20next%20scene.lua</source>
-				<source type="script" file="Scenery - Toggle record (quantized).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Toggle%20record%20(quantized).lua</source>
-				<source type="script" file="Scenery - Engine (toggle).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Engine%20(toggle).lua</source>
+				<source main="main" type="script" file="Scenery - New scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene.lua</source>
+				<source main="main" type="script" file="Scenery - New scene (custom bars).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene%20(custom%20bars).lua</source>
+				<source main="main" type="script" file="Scenery - Clone current scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Clone%20current%20scene.lua</source>
+				<source main="main" type="script" file="Scenery - Copy current scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Copy%20current%20scene.lua</source>
+				<source main="main" type="script" file="Scenery - Go to next scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Go%20to%20next%20scene.lua</source>
+				<source main="main" type="script" file="Scenery - Go to previous scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Go%20to%20previous%20scene.lua</source>
+				<source main="main" type="script" file="Scenery - Settings.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Settings.lua</source>
+				<source main="main" type="script" file="Scenery - Toggle link with next scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Toggle%20link%20with%20next%20scene.lua</source>
+				<source main="main" type="script" file="Scenery - Toggle record (quantized).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Toggle%20record%20(quantized).lua</source>
+				<source main="main" type="script" file="Scenery - Engine (toggle).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Engine%20(toggle).lua</source>
 				<source type="script" file="scenery_lib.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/scenery_lib.lua</source>
 			</version>
 		</reapack>
