@@ -82,11 +82,7 @@ end
 local function duplicate_scene(source)
     undoable("Looptastic: Duplicate scene", function()
         L.renumber_scenes()
-        local bars = L.bars_between(source.pos, source.rgnend)
-        if bars < 1 then bars = L.get_config().default_bars end
-        local scene = L.create_scene(bars)
-        L.copy_items(source.pos, source.rgnend, scene.pos, scene.rgnend)
-        L.set_loop_to(scene)
+        L.set_loop_to(L.duplicate_scene(source))
     end)
 end
 
