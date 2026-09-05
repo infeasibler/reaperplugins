@@ -1,6 +1,6 @@
 -- @noindex
--- Scenery: Duplicate current scene
--- Appends a scene of the same bar length, copies the current scene's items into it, and loops it.
+-- Scenery: Clone current scene
+-- Appends a scene of the configured length with fully independent item copies.
 
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
 local L = dofile(script_dir .. "scenery_lib.lua")
@@ -17,6 +17,6 @@ reaper.Undo_BeginBlock2(0)
 local scene = L.duplicate_scene(source)
 L.set_loop_to(scene)
 
-reaper.Undo_EndBlock2(0, "Scenery: Duplicate scene", -1)
+reaper.Undo_EndBlock2(0, "Scenery: Clone scene", -1)
 reaper.PreventUIRefresh(-1)
 reaper.UpdateArrange()

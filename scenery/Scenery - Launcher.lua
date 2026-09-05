@@ -4,7 +4,8 @@
 -- @provides
 --   [main] Scenery - New scene.lua
 --   [main] Scenery - New scene (custom bars).lua
---   [main] Scenery - Duplicate current scene.lua
+--   [main] Scenery - Clone current scene.lua
+--   [main] Scenery - Copy current scene.lua
 --   [main] Scenery - Go to next scene.lua
 --   [main] Scenery - Go to previous scene.lua
 --   [main] Scenery - Settings.lua
@@ -21,7 +22,7 @@
 --   by hand.
 --
 --   This package installs the whole Scenery toolkit: the Launcher panel,
---   the standalone action scripts (New scene, Duplicate, Go to next/
+--   the standalone action scripts (New scene, Clone, Copy, Go to next/
 --   previous scene, Settings, Toggle link, Toggle record, Engine) and the
 --   shared library they all depend on.
 
@@ -105,9 +106,9 @@ local function new_scene(bars)
     end)
 end
 
-local function duplicate_scene(source)
-    undoable("Scenery: Duplicate scene", function()
-        L.set_loop_to(L.duplicate_scene(source))
+local function duplicate_scene(source, copy_fn, description)
+    undoable("Scenery: " .. description .. " scene", function()
+        L.set_loop_to(L.duplicate_scene(source, copy_fn))
     end)
 end
 
@@ -198,7 +199,8 @@ local function scene_menu(scene, scenes)
 
     local rename_idx = add("Rename...")
     local resize_idx = add("Set length...")
-    local dup_idx = add("Duplicate")
+    local clone_idx = add("Clone")
+    local copy_idx = add("Copy")
     add_sep()
     local link_idx = has_next and add(scene.linked and "Unlink from next" or "Link with next") or nil
     local merge_idx = in_chain and add("Merge linked scenes") or nil
@@ -209,7 +211,8 @@ local function scene_menu(scene, scenes)
     local choice = gfx.showmenu(table.concat(items, "|"))
     if choice == rename_idx then rename_scene(scene)
     elseif choice == resize_idx then resize_scene(scene, scene_count)
-    elseif choice == dup_idx then duplicate_scene(scene)
+    elseif choice == clone_idx then duplicate_scene(scene, nil, "Clone")
+    elseif choice == copy_idx then duplicate_scene(scene, L.copy_items_linked, "Copy")
     elseif link_idx and choice == link_idx then toggle_link(scene)
     elseif merge_idx and choice == merge_idx then merge_chain(scene, scenes)
     elseif choice == delete_all_idx then delete_scene(scene, false)
@@ -315,15 +318,21 @@ end
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, cfg)
     local w = gfx.w - PAD * 2
-    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 4 - (24 + ROW.gap) * 2 - (22 + ROW.gap)
+    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 4 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end
     y = y + 24 + ROW.gap
 
-    if button(PAD, y, w, 24, "Duplicate current") then
+    if button(PAD, y, w, 24, "Clone current") then
         local source = L.active_scene(scenes)
-        if source then duplicate_scene(source) end
+        if source then duplicate_scene(source, nil, "Clone") end
+    end
+    y = y + 24 + ROW.gap
+
+    if button(PAD, y, w, 24, "Copy current") then
+        local source = L.active_scene(scenes)
+        if source then duplicate_scene(source, L.copy_items_linked, "Copy") end
     end
     y = y + 24 + ROW.gap
 

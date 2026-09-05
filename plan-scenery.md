@@ -32,20 +32,20 @@ Lets two or more *consecutive* scenes loop together as a single unit instead of 
 5. `Scenery - Toggle link with next scene.lua` *(depends on 1)*: new action script, toggles the link between the active scene and its immediate successor; no-ops (with a status message) if there's no next scene.
 6. Launcher UI *(depends on 5)*: show each scene's link state next to its entry (e.g. a chain icon or the `>>` suffix) and let the same toggle be triggered by clicking it, so linking doesn't require memorizing a separate action/keybind.
 
-## Phase 5 - Copy vs. Clone (spec only)
+## Phase 5 - Copy vs. Clone (implemented)
 
-Splits today's "Duplicate" into two distinct actions. Today's Duplicate already gives every item a fresh `GUID`/`IGUID` (see Phase 1 item 5), which is exactly what "Clone" should keep doing; "Copy" is the new, cheaper option.
+Splits today's "Duplicate" into two distinct actions. Today's Duplicate already gave every item a fresh `GUID`/`IGUID` (see Phase 1 item 5), which is exactly what "Clone" keeps doing; "Copy" is the new, cheaper option.
 
-1. Rename `Scenery - Duplicate current scene.lua` -> `Scenery - Clone current scene.lua` (label "Clone"); no logic changes, it keeps generating fresh `GUID`/`IGUID` per item so the clone is fully independent of the source.
-2. `scenery_lib.lua` - `copy_items_linked(src_start, src_end, dest_start)` *(depends on Phase 1 item 5)*: same traversal and repositioning as `copy_items`, but reuses the source item's existing `IGUID` instead of generating a new one. REAPER treats items that share an `IGUID` as pooled/comped takes, so editing the MIDI/audio content in one item updates every other item sharing that `IGUID` - giving a true "linked copy". `GUID` (the item's own identity) still gets a fresh value so the two remain separate, independently movable/deletable items.
-3. `Scenery - Copy current scene.lua` *(depends on 2)*: new action, same region/loop bookkeping as Clone but calls `copy_items_linked` instead of `copy_items`. Placed next to Clone in the launcher/toolbar.
-4. README/Settings *(depends on 1-3)*: document the distinction ("Copy = linked, editing one edits both; Clone = fully independent") since pooled comping is a REAPER concept most users won't already know.
+1. Renamed `Scenery - Duplicate current scene.lua` to `Scenery - Clone current scene.lua` (label "Clone"); it generates fresh `GUID`, `IGUID`, and MIDI `POOLEDEVTS` values per item so the clone is fully independent of the source.
+2. Added `scenery_lib.lua` - `copy_items_linked(src_start, src_end, dest_start, dest_end)`: same traversal and repositioning as `copy_items`, but reuses the source item's existing `IGUID` and MIDI `POOLEDEVTS` values instead of generating new ones. REAPER treats items that share these identities as pooled/comped takes, so editing the MIDI/audio content in one item updates every other item sharing them - giving a true "linked copy". `GUID` (the item's own identity) still gets a fresh value so the two remain separate, independently movable/deletable items.
+3. Added `Scenery - Copy current scene.lua`: same region/loop bookkeeping as Clone, but calls `copy_items_linked`. It is available next to Clone in the launcher and package actions.
+4. Updated the launcher, ReaPack metadata, and README to document the distinction ("Copy = linked, editing one edits both; Clone = fully independent") since pooled comping is a REAPER concept most users won't already know.
 
 ## Relevant files
 
 - `scenery/scenery_lib.lua` - new; all scene/bar/item logic
 - `scenery/Scenery - Engine (toggle).lua` - new; reuses the toggle + `get_action_context` + `atexit` pattern from `playtime_bridge.lua`
-- `scenery/Scenery - New scene.lua`, `... (custom bars).lua`, `... Duplicate current scene.lua`, `... Go to next/previous scene.lua`, `... Settings.lua` - new thin action wrappers
+- `scenery/Scenery - New scene.lua`, `... (custom bars).lua`, `... Clone current scene.lua`, `... Copy current scene.lua`, `... Go to next/previous scene.lua`, `... Settings.lua` - thin action wrappers
 - `scenery/Scenery - Toggle record (quantized).lua` - new (Phase 2); thin wrapper around `M.toggle_record()`, bindable in place of REAPER's native Record command
 - `scenery/Scenery - Toggle link with next scene.lua` - new (Phase 4); toggles the `>>` link suffix between the active scene and its successor
 - `scenery/Scenery - Clone current scene.lua` - renamed from `... Duplicate current scene.lua` (Phase 5); fully independent duplicate, fresh `GUID`/`IGUID`
@@ -58,7 +58,7 @@ Splits today's "Duplicate" into two distinct actions. Today's Duplicate already 
 1. Empty 120bpm 4/4 project -> New scene creates region "Scene 1" at 0-16s, loop points match, repeat enabled.
 2. New scene again -> "Scene 2" appended at 16s; loop moves to it.
 3. Add a 3/4 marker mid-project -> an 8-bar scene spans 8 ruler bars, not a fixed second count.
-4. Put items in Scene 1 -> Duplicate produces a scene with identical items at the same relative offsets on the same tracks; originals untouched.
+4. Put items in Scene 1 -> Clone produces a scene with identical items at the same relative offsets on the same tracks; originals untouched.
 5. While playing inside Scene 1, run New scene -> cursor does not jump; playback wraps only once it reaches the new scene.
 6. Engine on, transport stopped, click inside Scene 1 -> loop follows.
 7. Ctrl+Z after each action reverts in a single step.
@@ -73,9 +73,3 @@ Splits today's "Duplicate" into two distinct actions. Today's Duplicate already 
 
 - Included: region-backed scenes, tempo-map-aware bar lengths, append-after-last placement, item-only duplication, cursor-based active scene, auto-follow engine, scene-scoped record auto-loop, linked-scene chains, Copy (pooled/linked) vs. Clone (independent) duplication.
 - Excluded from v1: automation/envelope and tempo-marker duplication, inserting scenes between existing ones, scene deletion/reordering actions, ReaImGui UI, ReaPack packaging.
-
-## Further considerations
-
-1. Phase 2 fill extent - should a recorded loop fill only its own scene, or repeat across all later scenes too? Recommend scene-only (A); B = all subsequent scenes; C = user-configurable bar count.
-2. Items that *start before* a scene but overlap into it are skipped by Duplicate in v1. Alternative: split/clip them at the boundary. Recommend skipping for v1 and revisiting if it bites in practice.
-3. Scene deletion isn't an action yet - regions must be removed in the Region Manager, with renumbering happening on the next Scenery action. Worth adding a "Delete current scene (and close the gap)" action if you want scenes to be rearrangeable.

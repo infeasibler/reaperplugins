@@ -458,24 +458,42 @@ end
 
 -- Appends a new scene at the configured default bar length, tiling the
 -- source content to fill it (or trimming it, if the default is shorter).
-function M.duplicate_scene(source)
+function M.duplicate_scene(source, copy_fn)
     local bars = M.get_config().default_bars
     local scene = M.create_scene(bars)
     local unit = source.rgnend - source.pos
+    copy_fn = copy_fn or M.copy_items
     if unit <= 1e-9 then
-        M.copy_items(source.pos, source.rgnend, scene.pos, scene.rgnend)
+        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend)
         return scene
     end
     local dest = scene.pos
     while dest < scene.rgnend - 1e-9 do
         local tile_end = math.min(dest + unit, scene.rgnend)
-        M.copy_items(source.pos, source.rgnend, dest, tile_end)
+        copy_fn(source.pos, source.rgnend, dest, tile_end)
         dest = dest + unit
     end
     return scene
 end
 
 -- ----------------------------------------------------------------- items
+
+local function rewrite_chunk_field(chunk, tag, link_pool)
+    return (chunk:gsub("\n([ \t]*)" .. tag .. "(%s+{[^}]*})", function(indent, suffix)
+        if link_pool and (tag == "IGUID" or tag == "POOLEDEVTS") then
+            return "\n" .. indent .. tag .. suffix
+        end
+        return "\n" .. indent .. tag .. " " .. reaper.genGuid("")
+    end))
+end
+
+local function source_chunk(item, link_pool)
+    local ok, chunk = reaper.GetItemStateChunk(item, "", false)
+    if not ok then return nil end
+    chunk = rewrite_chunk_field(chunk, "GUID", link_pool)
+    chunk = rewrite_chunk_field(chunk, "IGUID", link_pool)
+    return rewrite_chunk_field(chunk, "POOLEDEVTS", link_pool)
+end
 
 local function item_guid(item)
     local ok, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
@@ -590,16 +608,12 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
 end
 
 cloned_chunk = function(item)
-    local ok, chunk = reaper.GetItemStateChunk(item, "", false)
-    if not ok then return nil end
-    return (chunk:gsub("\n([ \t]*)(I?GUID) {[^}]*}", function(indent, tag)
-        return "\n" .. indent .. tag .. " " .. reaper.genGuid("")
-    end))
+    return source_chunk(item, false)
 end
 
 -- Copies every item starting within [src_start, src_end) to the same track,
 -- offset to dest_start and clamped so nothing overruns dest_end.
-function M.copy_items(src_start, src_end, dest_start, dest_end)
+local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, link_pool)
     local offset = dest_start - src_start
     local copied = 0
     for t = 0, reaper.CountTracks(0) - 1 do
@@ -618,7 +632,7 @@ function M.copy_items(src_start, src_end, dest_start, dest_end)
             -- to keep - SplitMediaItem can't split before an item's own start, so it
             -- would otherwise be copied in full and left overhanging unclamped
             if pos < dest_end - 1e-9 then
-                local chunk = cloned_chunk(item)
+                local chunk = source_chunk(item, link_pool)
                 if chunk then
                     local new_item = reaper.AddMediaItemToTrack(track)
                     reaper.SetItemStateChunk(new_item, chunk, false)
@@ -636,6 +650,14 @@ function M.copy_items(src_start, src_end, dest_start, dest_end)
         end
     end
     return copied
+end
+
+function M.copy_items(src_start, src_end, dest_start, dest_end)
+    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, false)
+end
+
+function M.copy_items_linked(src_start, src_end, dest_start, dest_end)
+    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, true)
 end
 
 -- ------------------------------------------------------------------ misc
