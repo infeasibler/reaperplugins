@@ -17,9 +17,9 @@ reaper.SetExtState(L.EXT_SECTION, "engine_running", "1", false)
 reaper.SetToggleCommandState(section_id, cmd_id, 1)
 reaper.RefreshToolbar2(section_id, cmd_id)
 
-local last_scene_pos = (function()
+local last_scene_id = (function()
     local s = L.active_scene()
-    return s and s.pos or nil
+    return s and s.id or nil
 end)()
 
 local was_recording = L.is_recording()
@@ -86,7 +86,8 @@ local function follow()
         if entered then
             L.clear_pending()
             L.set_active_range(pending.pos, pending.rgnend)
-            last_scene_pos = pending.pos
+            local entered_scene = L.active_scene(scenes)
+            last_scene_id = entered_scene and entered_scene.id or nil
             return
         elseif cursor_moved then
             L.clear_pending()
@@ -96,12 +97,13 @@ local function follow()
     end
 
     local scene = L.active_scene(scenes)
-    if scene and (last_scene_pos == nil or math.abs(scene.pos - last_scene_pos) > 1e-9) then
+    if scene and (last_scene_id == nil or scene.id ~= last_scene_id) then
         -- linked scenes loop as one unit spanning the whole chain, re-scoped
         -- to just the current scene once it's no longer linked to anything
         local start, stop = L.chain_bounds(scene, scenes)
         L.set_loop_to({ pos = start, rgnend = stop }, false)
-        last_scene_pos = scene.pos
+        L.set_active_scene(scene)
+        last_scene_id = scene.id
     end
 end
 

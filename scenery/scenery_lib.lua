@@ -259,14 +259,20 @@ function M.scene_at(time, scenes)
     return best
 end
 
--- Prefers the scene that was last explicitly selected (see set_active_range)
--- while the cursor is still inside it, since resolving purely by position is
--- ambiguous whenever regions overlap (e.g. a nested scene sharing its start
--- with the first scene it wraps). Falls back to plain position lookup once
--- the cursor has moved on.
+-- Prefers the scene that was last explicitly selected while the cursor is
+-- still inside it, since resolving purely by position is ambiguous whenever
+-- regions overlap. Falls back to plain position lookup once it has ended.
 function M.active_scene(scenes)
     scenes = scenes or M.scan_scenes()
     local cursor = M.cursor_position()
+    local active_id = tonumber(reaper.GetExtState(M.EXT_SECTION, "active_id"))
+    if active_id then
+        for _, s in ipairs(scenes) do
+            if s.id == active_id and cursor >= s.pos and cursor < s.rgnend then
+                return s
+            end
+        end
+    end
     local active_start, active_end = M.get_active_range()
     if active_start and cursor >= active_start - 1e-9 and cursor < active_end then
         for _, s in ipairs(scenes) do
@@ -285,6 +291,7 @@ end
 function M.set_loop_to(scene, lock)
     reaper.GetSet_LoopTimeRange2(0, true, true, scene.pos, scene.rgnend, false)
     reaper.GetSetRepeat(1)
+    M.set_active_scene(scene)
     if lock ~= false then
         reaper.SetExtState(M.EXT_SECTION, "pending_start", tostring(scene.pos), false)
         reaper.SetExtState(M.EXT_SECTION, "pending_end", tostring(scene.rgnend), false)
@@ -302,6 +309,12 @@ end
 function M.set_active_range(pos, rgnend)
     reaper.SetExtState(M.EXT_SECTION, "active_start", tostring(pos), false)
     reaper.SetExtState(M.EXT_SECTION, "active_end", tostring(rgnend), false)
+end
+
+function M.set_active_scene(scene)
+    if scene and scene.id then
+        reaper.SetExtState(M.EXT_SECTION, "active_id", tostring(scene.id), false)
+    end
 end
 
 function M.get_active_range()
@@ -405,7 +418,8 @@ end
 
 function M.jump_to(scene, scenes)
     local start, stop = M.chain_bounds(scene, scenes)
-    M.set_loop_to({ pos = start, rgnend = stop }, false)
+    M.set_loop_to({ pos = start, rgnend = stop }, M.is_playing())
+    M.set_active_scene(scene)
     reaper.SetEditCurPos(scene.pos, false, true)
 end
 
