@@ -9,15 +9,16 @@ local defaults = table.concat({
     cfg.default_bars,
     string.format("%d,%d,%d", cfg.color_r, cfg.color_g, cfg.color_b),
     cfg.follow_enabled and "1" or "0",
+    cfg.record_auto_loop and "1" or "0",
 }, ",")
 
 local ok, input = reaper.GetUserInputs(
-    "Looptastic - Settings", 3,
-    "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,extrawidth=60",
+    "Looptastic - Settings", 4,
+    "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,Record auto-loop (1/0):,extrawidth=60",
     defaults)
 if not ok then return end
 
-local bars, r, g, b, follow = input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*)$")
+local bars, r, g, b, follow, record_auto_loop = input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*)$")
 if not bars then
     reaper.MB("Could not parse the settings. Colour must be three numbers, e.g. 48,128,192.", "Looptastic", 0)
     return
@@ -36,3 +37,4 @@ end
 L.set_config("default_bars", bar_count)
 L.set_config("region_color", string.format("%d,%d,%d", clamp_channel(r), clamp_channel(g), clamp_channel(b)))
 L.set_config("follow_enabled", follow:match("^%s*1%s*$") and "1" or "0")
+L.set_config("record_auto_loop", record_auto_loop:match("^%s*1%s*$") and "1" or "0")

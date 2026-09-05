@@ -21,10 +21,46 @@ local last_scene_pos = (function()
     return s and s.pos or nil
 end)()
 
+local was_recording = L.is_recording()
+local recording_snapshot = nil
+local recording_scene = nil
 local next_poll = 0
+
+-- Recording starts and stops immediately (native Record button, launcher Rec
+-- button, and the standalone action all behave the same); bar-alignment is
+-- applied purely in post-processing by apply_loop_source_to_new_items.
+local function service_recording()
+    local recording = L.is_recording()
+    local cfg = L.get_config()
+    if not cfg.record_auto_loop then
+        recording_snapshot = nil
+        recording_scene = nil
+        was_recording = recording
+        return
+    end
+
+    if recording and not was_recording then
+        recording_snapshot = L.snapshot_item_guids()
+        recording_scene = L.active_scene()
+    elseif not recording and was_recording then
+        if recording_snapshot and recording_scene then
+            reaper.PreventUIRefresh(1)
+            reaper.Undo_BeginBlock2(0)
+            local processed = L.apply_loop_source_to_new_items(recording_snapshot, recording_scene)
+            reaper.Undo_EndBlock2(0, "Looptastic: Record auto-loop (" .. processed .. " items)", -1)
+            reaper.PreventUIRefresh(-1)
+            if processed > 0 then reaper.UpdateArrange() end
+        end
+        recording_snapshot = nil
+        recording_scene = nil
+    end
+    was_recording = recording
+end
 
 local function follow()
     local cfg = L.get_config()
+    service_recording()
+
     if not cfg.follow_enabled then return end
 
     local scenes = L.scan_scenes()
@@ -68,7 +104,9 @@ end
 reaper.atexit(function()
     reaper.SetExtState(L.EXT_SECTION, "engine_running", "0", false)
     L.clear_pending()
-    L.clear_queue()
+    was_recording = false
+    recording_snapshot = nil
+    recording_scene = nil
     reaper.SetToggleCommandState(section_id, cmd_id, 0)
     reaper.RefreshToolbar2(section_id, cmd_id)
 end)

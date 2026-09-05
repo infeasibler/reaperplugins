@@ -24,6 +24,7 @@ function M.get_config()
         default_bars        = math.max(1, math.floor(tonumber(ext_get("default_bars", M.DEFAULT_BARS)) or M.DEFAULT_BARS)),
         color_r             = tonumber(r), color_g = tonumber(g), color_b = tonumber(b),
         follow_enabled      = ext_get("follow_enabled", "1") == "1",
+        record_auto_loop    = ext_get("record_auto_loop", "1") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
         poll_interval       = tonumber(ext_get("poll_interval", "0.008")) or 0.008,
     }
@@ -37,8 +38,6 @@ function M.region_color(cfg)
     return reaper.ColorToNative(cfg.color_r, cfg.color_g, cfg.color_b) | 0x1000000
 end
 
--- REAPER's own "smooth seek" playback preference fights our bar-quantized scene
--- firing, causing a double seek/click; expose it so it can be disabled from here.
 function M.get_smooth_seek()
     local ok, value = reaper.get_config_var_string("smoothseek")
     return ok and value ~= "0"
@@ -160,6 +159,10 @@ function M.is_playing()
     return (reaper.GetPlayState() & 1) == 1
 end
 
+function M.is_recording()
+    return (reaper.GetPlayState() & 4) ~= 0
+end
+
 function M.cursor_position()
     if M.is_playing() then return reaper.GetPlayPosition() end
     return reaper.GetCursorPosition()
@@ -210,51 +213,43 @@ end
 
 -- ---------------------------------------------------------------- queueing
 
--- Arms a scene to take over at the next bar line; the engine does the firing.
+-- Switches to a scene immediately; smooth seek (if enabled) gives it a quantized
+-- feel without the engine having to poll for a future fire time.
 function M.queue_scene(scene)
-    if not M.is_playing() then
-        M.jump_to(scene)
-        return
+    M.jump_to(scene)
+end
+
+function M.engine_running()
+    return reaper.GetExtState(M.EXT_SECTION, "engine_running") == "1"
+end
+
+-- Registers the engine action if it isn't in the action list yet, then runs it.
+function M.start_engine(script_dir)
+    local path = script_dir .. "Looptastic - Engine (toggle).lua"
+    local command = reaper.AddRemoveReaScript(true, 0, path, true)
+    if command == 0 then
+        reaper.MB("Could not find \"Looptastic - Engine (toggle).lua\" next to this script.",
+            "Looptastic", 0)
+        return false
     end
-    -- smooth seek is off, so REAPER will quantize the seek to bar end automatically
-    M.fire_queue({ pos = scene.pos, rgnend = scene.rgnend, fire = -1 })
+    reaper.Main_OnCommand(command, 0)
+    return true
 end
 
-function M.get_queue()
-    local s = tonumber(reaper.GetExtState(M.EXT_SECTION, "queue_start"))
-    local e = tonumber(reaper.GetExtState(M.EXT_SECTION, "queue_end"))
-    local f = tonumber(reaper.GetExtState(M.EXT_SECTION, "queue_fire"))
-    if not s or not e or not f then return nil end
-    return { pos = s, rgnend = e, fire = f }
-end
-
-function M.clear_queue()
-    reaper.DeleteExtState(M.EXT_SECTION, "queue_start", false)
-    reaper.DeleteExtState(M.EXT_SECTION, "queue_end", false)
-    reaper.DeleteExtState(M.EXT_SECTION, "queue_fire", false)
+-- Shared by the launcher's Rec button and the standalone action - just ensures
+-- the engine is running so it can bar-align new items after the fact, then
+-- toggles record the normal way. Behaves identically to the native Record
+-- command/button, which can't be intercepted for true quantized start/stop.
+function M.toggle_record(cfg, script_dir)
+    if not M.is_recording() and cfg.record_auto_loop and not M.engine_running() then
+        M.start_engine(script_dir)
+    end
+    reaper.Main_OnCommand(1013, 0)
 end
 
 function M.jump_to(scene)
-    M.clear_queue()
     M.set_loop_to(scene, false)
     reaper.SetEditCurPos(scene.pos, false, true)
-end
-
-function M.fire_queue(q)
-    M.clear_queue()
-    -- allowautoseek is unreliable here (pos often already inside the new range by the
-    -- time this runs), so seek explicitly every time to guarantee correct restart/position.
-    reaper.GetSet_LoopTimeRange2(0, true, true, q.pos, q.rgnend, false)
-    -- avoid re-asserting repeat every fire; toggling an already-set state can glitch transport
-    if reaper.GetSetRepeat(-1) ~= 1 then reaper.GetSetRepeat(1) end
-    reaper.SetEditCurPos(q.pos, false, true)
-    if M.is_playing() then
-        -- guard follow(): its position read lags behind ours, so without this it
-        -- sees the old scene as still active and snaps the loop back, then forward again
-        reaper.SetExtState(M.EXT_SECTION, "pending_start", tostring(q.pos), false)
-        reaper.SetExtState(M.EXT_SECTION, "pending_end", tostring(q.rgnend), false)
-        reaper.SetExtState(M.EXT_SECTION, "pending_cursor", tostring(reaper.GetCursorPosition()), false)
-    end
 end
 
 function M.beats_until(target)
@@ -276,6 +271,78 @@ function M.create_scene(bars)
 end
 
 -- ----------------------------------------------------------------- items
+
+local function item_guid(item)
+    local ok, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
+    if not ok or guid == "" then return nil end
+    return guid
+end
+
+function M.snapshot_item_guids()
+    local guids = {}
+    for t = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, t)
+        for k = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, k)
+            local guid = item_guid(item)
+            if guid then guids[guid] = true end
+        end
+    end
+    return guids
+end
+
+-- Recording starts immediately (not bar-aligned), so new items are physically
+-- split at the bar boundaries rather than just resized - a transient D_LENGTH/
+-- B_LOOPSRC toggle doesn't reliably truncate a MIDI take's source length, so
+-- splitting (which REAPER truncates correctly for both audio and MIDI) is used
+-- to cut the pickup before the first full bar and the tail after the last one.
+function M.apply_loop_source_to_new_items(existing_guids, scene)
+    if not existing_guids or not scene then return 0 end
+
+    local targets = {}
+    for t = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, t)
+        for k = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, k)
+            local guid = item_guid(item)
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            if guid and not existing_guids[guid]
+                and pos >= scene.pos - 1e-9 and pos < scene.rgnend - 1e-9 then
+                targets[#targets + 1] = { track = track, item = item, pos = pos }
+            end
+        end
+    end
+
+    local processed = 0
+    for _, target in ipairs(targets) do
+        local track, item, pos = target.track, target.item, target.pos
+        local snapped_pos = math.min(scene.rgnend, math.max(scene.pos, M.snap_to_bar(pos, "next")))
+        local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        local snapped_end = math.min(scene.rgnend, M.snap_to_bar(recorded_end, "next"))
+        if snapped_end <= snapped_pos + 1e-9 then
+            snapped_end = math.min(scene.rgnend, M.bars_to_time(snapped_pos, 1))
+        end
+        local scene_length = scene.rgnend - snapped_pos
+        if snapped_end > snapped_pos + 1e-9 and scene_length > 0 then
+            if pos < snapped_pos - 1e-9 then
+                local right = reaper.SplitMediaItem(item, snapped_pos)
+                if right then
+                    reaper.DeleteTrackMediaItem(track, item)
+                    item = right
+                end
+            end
+            if recorded_end > snapped_end + 1e-9 then
+                local right = reaper.SplitMediaItem(item, snapped_end)
+                if right then reaper.DeleteTrackMediaItem(track, right) end
+            end
+            reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 1)
+            reaper.SetMediaItemInfo_Value(item, "D_LENGTH", scene_length)
+            reaper.UpdateItemInProject(item)
+            processed = processed + 1
+        end
+    end
+    return processed
+end
 
 local function cloned_chunk(item)
     local ok, chunk = reaper.GetItemStateChunk(item, "", false)
