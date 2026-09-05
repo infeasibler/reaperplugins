@@ -226,12 +226,17 @@ local function draw_settings(y, cfg)
     if button(PAD, y + (step + ROW.gap) * 4, w, step, auto_loop_label) then
         L.set_config("record_auto_loop", cfg.record_auto_loop and "0" or "1")
     end
+
+    local end_of_bar_label = (cfg.record_end_of_bar and "[x] " or "[ ] ") .. "Record to end of bar"
+    if button(PAD, y + (step + ROW.gap) * 5, w, step, end_of_bar_label) then
+        L.set_config("record_end_of_bar", cfg.record_end_of_bar and "0" or "1")
+    end
 end
 
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, cfg)
     local w = gfx.w - PAD * 2
-    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 3 - (24 + ROW.gap) * 2 - (22 + ROW.gap)
+    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 4 - (24 + ROW.gap) * 2 - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end

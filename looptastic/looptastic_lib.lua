@@ -25,6 +25,7 @@ function M.get_config()
         color_r             = tonumber(r), color_g = tonumber(g), color_b = tonumber(b),
         follow_enabled      = ext_get("follow_enabled", "1") == "1",
         record_auto_loop    = ext_get("record_auto_loop", "1") == "1",
+        record_end_of_bar   = ext_get("record_end_of_bar", "1") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
         poll_interval       = tonumber(ext_get("poll_interval", "0.008")) or 0.008,
     }
@@ -241,19 +242,20 @@ end
 
 -- Shared by the launcher's Rec button and the standalone action. Starting is
 -- immediate (native Record command/button can't be intercepted for a
--- quantized start). Stopping, when auto-loop is on, is deferred to the
--- engine so nothing recorded in the current bar is lost - see
--- request_quantized_stop/due_record_stop.
+-- quantized start). Stopping, when record-to-end-of-bar is on, is deferred to
+-- the engine so nothing recorded in the current bar is lost - see
+-- request_quantized_stop/due_record_stop. This is independent of auto-loop,
+-- which only controls whether finished recordings get bar-aligned/looped.
 function M.toggle_record(cfg, script_dir)
     if M.is_recording() then
-        if cfg.record_auto_loop and M.engine_running() then
+        if cfg.record_end_of_bar and M.engine_running() then
             M.request_quantized_stop()
         else
             reaper.Main_OnCommand(1013, 0)
         end
         return
     end
-    if cfg.record_auto_loop and not M.engine_running() then
+    if (cfg.record_auto_loop or cfg.record_end_of_bar) and not M.engine_running() then
         M.start_engine(script_dir)
     end
     reaper.Main_OnCommand(1013, 0)
