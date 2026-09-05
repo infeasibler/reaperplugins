@@ -96,6 +96,9 @@ local function switch_scene(scene)
 end
 
 local function record_button_state()
+    if L.record_stop_pending() then
+        return "Stopping...", COLOR.playing
+    end
     if L.is_recording() then
         return "Recording", COLOR.playing
     end

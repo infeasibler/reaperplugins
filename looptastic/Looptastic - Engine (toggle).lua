@@ -24,6 +24,7 @@ end)()
 local was_recording = L.is_recording()
 local recording_snapshot = nil
 local recording_scene = nil
+local last_play_pos = nil
 local next_poll = 0
 
 -- Recording starts and stops immediately (native Record button, launcher Rec
@@ -59,6 +60,15 @@ end
 
 local function follow()
     local cfg = L.get_config()
+
+    -- honour a quantized-stop request before checking for a stopped recording,
+    -- so nothing recorded through the end of the bar is lost
+    local play_pos = L.is_playing() and reaper.GetPlayPosition() or nil
+    if play_pos and L.due_record_stop(play_pos, last_play_pos) then
+        reaper.Main_OnCommand(1013, 0)
+    end
+    last_play_pos = play_pos
+
     service_recording()
 
     if not cfg.follow_enabled then return end
@@ -106,6 +116,7 @@ end
 reaper.atexit(function()
     reaper.SetExtState(L.EXT_SECTION, "engine_running", "0", false)
     L.clear_pending()
+    L.clear_record_stop_pending()
     was_recording = false
     recording_snapshot = nil
     recording_scene = nil

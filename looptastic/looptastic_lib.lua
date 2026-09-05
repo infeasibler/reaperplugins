@@ -236,15 +236,57 @@ function M.start_engine(script_dir)
     return true
 end
 
--- Shared by the launcher's Rec button and the standalone action - just ensures
--- the engine is running so it can bar-align new items after the fact, then
--- toggles record the normal way. Behaves identically to the native Record
--- command/button, which can't be intercepted for true quantized start/stop.
+-- Shared by the launcher's Rec button and the standalone action. Starting is
+-- immediate (native Record command/button can't be intercepted for a
+-- quantized start). Stopping, when auto-loop is on, is deferred to the
+-- engine so nothing recorded in the current bar is lost - see
+-- request_quantized_stop/due_record_stop.
 function M.toggle_record(cfg, script_dir)
-    if not M.is_recording() and cfg.record_auto_loop and not M.engine_running() then
+    if M.is_recording() then
+        if cfg.record_auto_loop and M.engine_running() then
+            M.request_quantized_stop()
+        else
+            reaper.Main_OnCommand(1013, 0)
+        end
+        return
+    end
+    if cfg.record_auto_loop and not M.engine_running() then
         M.start_engine(script_dir)
     end
     reaper.Main_OnCommand(1013, 0)
+end
+
+-- Requests that recording keep running until just past the end of the
+-- current bar, instead of cutting off immediately, so nothing is missed;
+-- the engine's poll loop watches for this and issues the real stop.
+function M.request_quantized_stop()
+    local target = M.bars_to_time(M.cursor_position(), 1) + 0.02
+    reaper.SetExtState(M.EXT_SECTION, "pending_record_stop", tostring(target), false)
+end
+
+function M.record_stop_pending()
+    return reaper.GetExtState(M.EXT_SECTION, "pending_record_stop") ~= ""
+end
+
+function M.clear_record_stop_pending()
+    reaper.DeleteExtState(M.EXT_SECTION, "pending_record_stop", false)
+end
+
+-- True once playback has reached (or looped past) the requested stop time -
+-- looping past it happens when the bar end coincides with the scene's own
+-- loop end, wrapping the play position back to the scene start beforehand.
+function M.due_record_stop(play_pos, prev_play_pos)
+    local target = tonumber(reaper.GetExtState(M.EXT_SECTION, "pending_record_stop"))
+    if not target then return false end
+    if not M.is_recording() then
+        M.clear_record_stop_pending()
+        return false
+    end
+    if play_pos < target and not (prev_play_pos and play_pos < prev_play_pos) then
+        return false
+    end
+    M.clear_record_stop_pending()
+    return true
 end
 
 function M.jump_to(scene)
