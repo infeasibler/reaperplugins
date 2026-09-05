@@ -1,9 +1,10 @@
--- Looptastic - shared library
--- Loaded by the Looptastic action scripts via dofile(). Not an action itself.
+-- @noindex
+-- Scenery - shared library
+-- Loaded by the Scenery action scripts via dofile(). Not an action itself.
 
 local M = {}
 
-M.EXT_SECTION = "Looptastic"
+M.EXT_SECTION = "Scenery"
 M.SCENE_PREFIX = "Scene"
 M.DEFAULT_BARS = 8
 M.DEFAULT_COLOR_RGB = { 0x30, 0x80, 0xC0 }
@@ -86,7 +87,7 @@ end
 
 -- Every region is treated as a scene, whatever it's named - the user can
 -- create/rename regions directly in REAPER's timeline/Region Manager and
--- Looptastic will pick them up. `num` is the positional (timeline) number,
+-- Scenery will pick them up. `num` is the positional (timeline) number,
 -- computed fresh each scan rather than stored in the name. A trailing " >>"
 -- in the region name marks the scene as linked to its immediate successor
 -- (see M.link_chain); it's stripped out of `label` so rename dialogs and the
@@ -107,14 +108,23 @@ function M.scan_scenes()
         end
         i = i + 1
     end
-    table.sort(scenes, function(a, b) return a.pos < b.pos end)
+    -- table.sort's tie-break for equal keys isn't stable/deterministic, so two
+    -- regions starting at the same point (a nested scene and the first scene
+    -- it contains) could swap order from one scan to the next. Breaking ties
+    -- by longest-first keeps the containing (nested) region ordered before
+    -- the shorter one it wraps, so scene_at's first-match always resolves to
+    -- the nested scene rather than randomly flipping to the inner one.
+    table.sort(scenes, function(a, b)
+        if a.pos ~= b.pos then return a.pos < b.pos end
+        return a.rgnend > b.rgnend
+    end)
     for n, s in ipairs(scenes) do s.num = n end
     return scenes
 end
 
 -- Builds a region name from a (user-chosen, possibly empty) label plus the
 -- link-chain suffix. Unlike scene numbers, labels are never rewritten by
--- Looptastic on its own - only explicit renames or link toggles touch them.
+-- Scenery on its own - only explicit renames or link toggles touch them.
 function M.scene_name(label, linked)
     local base = label or ""
     return linked and (base .. " >>") or base
@@ -249,8 +259,23 @@ function M.scene_at(time, scenes)
     return best
 end
 
+-- Prefers the scene that was last explicitly selected (see set_active_range)
+-- while the cursor is still inside it, since resolving purely by position is
+-- ambiguous whenever regions overlap (e.g. a nested scene sharing its start
+-- with the first scene it wraps). Falls back to plain position lookup once
+-- the cursor has moved on.
 function M.active_scene(scenes)
-    return M.scene_at(M.cursor_position(), scenes)
+    scenes = scenes or M.scan_scenes()
+    local cursor = M.cursor_position()
+    local active_start, active_end = M.get_active_range()
+    if active_start and cursor >= active_start - 1e-9 and cursor < active_end then
+        for _, s in ipairs(scenes) do
+            if math.abs(s.pos - active_start) < 1e-6 and math.abs(s.rgnend - active_end) < 1e-6 then
+                return s
+            end
+        end
+    end
+    return M.scene_at(cursor, scenes)
 end
 
 -- -------------------------------------------------------------- transport
@@ -266,7 +291,24 @@ function M.set_loop_to(scene, lock)
         reaper.SetExtState(M.EXT_SECTION, "pending_cursor", tostring(reaper.GetCursorPosition()), false)
     else
         M.clear_pending()
+        M.set_active_range(scene.pos, scene.rgnend)
     end
+end
+
+-- Remembers which scene the loop is meant to be on right now, so the engine's
+-- auto-follow can stay put while the cursor is inside it instead of re-picking
+-- via scene_at every poll - which is ambiguous whenever regions overlap (e.g.
+-- a nested scene sharing its start with the first scene it wraps).
+function M.set_active_range(pos, rgnend)
+    reaper.SetExtState(M.EXT_SECTION, "active_start", tostring(pos), false)
+    reaper.SetExtState(M.EXT_SECTION, "active_end", tostring(rgnend), false)
+end
+
+function M.get_active_range()
+    local s = tonumber(reaper.GetExtState(M.EXT_SECTION, "active_start"))
+    local e = tonumber(reaper.GetExtState(M.EXT_SECTION, "active_end"))
+    if not s or not e then return nil end
+    return s, e
 end
 
 function M.get_pending()
@@ -296,11 +338,11 @@ end
 
 -- Registers the engine action if it isn't in the action list yet, then runs it.
 function M.start_engine(script_dir)
-    local path = script_dir .. "Looptastic - Engine (toggle).lua"
+    local path = script_dir .. "Scenery - Engine (toggle).lua"
     local command = reaper.AddRemoveReaScript(true, 0, path, true)
     if command == 0 then
-        reaper.MB("Could not find \"Looptastic - Engine (toggle).lua\" next to this script.",
-            "Looptastic", 0)
+        reaper.MB("Could not find \"Scenery - Engine (toggle).lua\" next to this script.",
+            "Scenery", 0)
         return false
     end
     reaper.Main_OnCommand(command, 0)
@@ -378,13 +420,24 @@ end
 -- The new scene's default name is derived purely from how many scene
 -- regions currently exist, regardless of what those existing regions are
 -- named - so a user free-renaming regions in the Region Manager doesn't
--- disrupt numbering of ones created afterwards via Looptastic actions.
+-- disrupt numbering of ones created afterwards via Scenery actions.
+-- If that name is already taken (e.g. a region was manually renamed to
+-- "Scene 10" ahead of time), " - 1", " - 2", etc. are appended until unique.
+local function unique_scene_name(base, scenes)
+    local taken = {}
+    for _, s in ipairs(scenes) do taken[s.name] = true end
+    if not taken[base] then return base end
+    local n = 1
+    while taken[base .. " - " .. n] do n = n + 1 end
+    return base .. " - " .. n
+end
+
 function M.create_scene(bars)
     local cfg = M.get_config()
     local scenes = M.scan_scenes()
     local start = (#scenes > 0) and scenes[#scenes].rgnend or M.snap_to_bar(0)
     local stop = M.bars_to_time(start, bars)
-    local name = M.SCENE_PREFIX .. " " .. (#scenes + 1)
+    local name = unique_scene_name(M.SCENE_PREFIX .. " " .. (#scenes + 1), scenes)
     reaper.AddProjectMarker2(0, true, start, stop, name, -1, M.region_color(cfg))
     return { pos = start, rgnend = stop, name = name, num = #scenes + 1 }
 end
@@ -574,7 +627,7 @@ end
 -- ------------------------------------------------------------------ misc
 
 function M.msg(text)
-    reaper.ShowConsoleMsg("[Looptastic] " .. tostring(text) .. "\n")
+    reaper.ShowConsoleMsg("[Scenery] " .. tostring(text) .. "\n")
 end
 
 return M

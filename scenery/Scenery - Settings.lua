@@ -1,8 +1,9 @@
--- Looptastic: Settings
--- Edits the persistent Looptastic preferences (shared by all Looptastic actions).
+-- @noindex
+-- Scenery: Settings
+-- Edits the persistent Scenery preferences (shared by all Scenery actions).
 
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
-local L = dofile(script_dir .. "looptastic_lib.lua")
+local L = dofile(script_dir .. "scenery_lib.lua")
 
 local cfg = L.get_config()
 local defaults = table.concat({
@@ -14,7 +15,7 @@ local defaults = table.concat({
 }, ",")
 
 local ok, input = reaper.GetUserInputs(
-    "Looptastic - Settings", 5,
+    "Scenery - Settings", 5,
     "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,Record auto-loop (1/0):," ..
     "Record to end of bar (1/0):,extrawidth=60",
     defaults)
@@ -23,13 +24,13 @@ if not ok then return end
 local bars, r, g, b, follow, record_auto_loop, record_end_of_bar =
     input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*)$")
 if not bars then
-    reaper.MB("Could not parse the settings. Colour must be three numbers, e.g. 48,128,192.", "Looptastic", 0)
+    reaper.MB("Could not parse the settings. Colour must be three numbers, e.g. 48,128,192.", "Scenery", 0)
     return
 end
 
 local bar_count = math.floor(tonumber(bars) or 0)
 if bar_count < 1 then
-    reaper.MB("Default scene length must be a positive whole number.", "Looptastic", 0)
+    reaper.MB("Default scene length must be a positive whole number.", "Scenery", 0)
     return
 end
 

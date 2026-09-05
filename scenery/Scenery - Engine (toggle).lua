@@ -1,9 +1,10 @@
--- Looptastic: Engine (toggle)
+-- @noindex
+-- Scenery: Engine (toggle)
 -- Background service that keeps the loop points on the scene under the cursor.
--- Run once to start, run again to stop. All other Looptastic actions work without it.
+-- Run once to start, run again to stop. All other Scenery actions work without it.
 
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
-local L = dofile(script_dir .. "looptastic_lib.lua")
+local L = dofile(script_dir .. "scenery_lib.lua")
 
 local _, _, section_id, cmd_id = reaper.get_action_context()
 
@@ -48,7 +49,7 @@ local function service_recording()
             reaper.PreventUIRefresh(1)
             reaper.Undo_BeginBlock2(0)
             local processed = L.apply_loop_source_to_new_items(recording_snapshot, recording_scene)
-            reaper.Undo_EndBlock2(0, "Looptastic: Record auto-loop (" .. processed .. " items)", -1)
+            reaper.Undo_EndBlock2(0, "Scenery: Record auto-loop (" .. processed .. " items)", -1)
             reaper.PreventUIRefresh(-1)
             if processed > 0 then reaper.UpdateArrange() end
         end
@@ -84,6 +85,7 @@ local function follow()
         local cursor_moved = (not playing) and math.abs(reaper.GetCursorPosition() - pending.cursor) > 1e-6
         if entered then
             L.clear_pending()
+            L.set_active_range(pending.pos, pending.rgnend)
             last_scene_pos = pending.pos
             return
         elseif cursor_moved then
@@ -111,7 +113,7 @@ local function loop()
         next_poll = now + (L.get_config().poll_interval)
         -- an uncaught error here would otherwise kill the whole defer chain silently
         local ok, err = pcall(follow)
-        if not ok then reaper.ShowConsoleMsg("Looptastic engine error: " .. tostring(err) .. "\n") end
+        if not ok then reaper.ShowConsoleMsg("Scenery engine error: " .. tostring(err) .. "\n") end
     end
     reaper.defer(loop)
 end

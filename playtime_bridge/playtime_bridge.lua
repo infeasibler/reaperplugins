@@ -1,3 +1,4 @@
+-- @noindex
 -- Playtime Bridge v1.0
 -- Automatically starts/stops REAPER transport in sync with Playtime 2 playback.
 --

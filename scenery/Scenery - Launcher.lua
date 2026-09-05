@@ -1,13 +1,40 @@
--- Looptastic: Launcher
+-- @description Scenery
+-- @version 0.1.0
+-- @author infeasibler
+-- @provides
+--   [main] Scenery - New scene.lua
+--   [main] Scenery - New scene (custom bars).lua
+--   [main] Scenery - Duplicate current scene.lua
+--   [main] Scenery - Go to next scene.lua
+--   [main] Scenery - Go to previous scene.lua
+--   [main] Scenery - Settings.lua
+--   [main] Scenery - Toggle link with next scene.lua
+--   [main] Scenery - Toggle record (quantized).lua
+--   [main] Scenery - Engine (toggle).lua
+--   scenery_lib.lua
+-- @about
+--   Scene-based looping for REAPER. A "scene" is any project region - name it
+--   whatever you like (create/rename regions directly on the timeline or in
+--   the Region Manager). Creating a scene appends a new region after the
+--   last one, sets the loop points to it and enables repeat, so you can
+--   build an arrangement one loop at a time without touching the timeline
+--   by hand.
+--
+--   This package installs the whole Scenery toolkit: the Launcher panel,
+--   the standalone action scripts (New scene, Duplicate, Go to next/
+--   previous scene, Settings, Toggle link, Toggle record, Engine) and the
+--   shared library they all depend on.
+
+-- Scenery: Launcher
 -- Ableton-style scene launcher drawn with REAPER's built-in gfx (no extensions needed).
 -- Left-click and double-click both switch scenes immediately; smooth seek (if
 -- enabled in Settings) gives the switch a quantized feel.
 -- right-click opens a per-scene menu.
 
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
-local L = dofile(script_dir .. "looptastic_lib.lua")
+local L = dofile(script_dir .. "scenery_lib.lua")
 
-local WINDOW = { title = "Looptastic", w = 260, h = 500 }
+local WINDOW = { title = "Scenery", w = 260, h = 500 }
 local ROW = { h = 26, gap = 4 }
 local PAD = 8
 local DOUBLE_CLICK_SECONDS = 0.35
@@ -73,13 +100,13 @@ local function undoable(description, fn)
 end
 
 local function new_scene(bars)
-    undoable("Looptastic: New scene", function()
+    undoable("Scenery: New scene", function()
         L.set_loop_to(L.create_scene(bars))
     end)
 end
 
 local function duplicate_scene(source)
-    undoable("Looptastic: Duplicate scene", function()
+    undoable("Scenery: Duplicate scene", function()
         L.set_loop_to(L.duplicate_scene(source))
     end)
 end
@@ -101,39 +128,39 @@ end
 
 local function rename_scene(scene)
     local ok, label = reaper.GetUserInputs("Rename scene", 1, "Label:,extrawidth=120", scene.label or "")
-    if ok then undoable("Looptastic: Rename scene", function() L.rename_scene(scene, label) end) end
+    if ok then undoable("Scenery: Rename scene", function() L.rename_scene(scene, label) end) end
 end
 
 local function resize_scene(scene, scene_count)
     if scene.num ~= scene_count then
         reaper.MB("Only the last scene can be resized; resizing an earlier one would overlap " ..
-            "its neighbour.", "Looptastic", 0)
+            "its neighbour.", "Scenery", 0)
         return
     end
     local bars = L.bars_between(scene.pos, scene.rgnend)
     local ok, input = reaper.GetUserInputs("Set scene length", 1, "Length in bars:", tostring(bars))
     local wanted = ok and math.floor(tonumber(input) or 0) or 0
     if wanted >= 1 then
-        undoable("Looptastic: Set scene length", function() L.set_scene_length(scene, wanted) end)
+        undoable("Scenery: Set scene length", function() L.set_scene_length(scene, wanted) end)
     end
 end
 
 local function delete_scene(scene, keep_items, skip_confirm)
     if skip_confirm or not L.get_config().confirm_destructive then
-        undoable("Looptastic: Delete scene", function() L.delete_scene(scene, keep_items) end)
+        undoable("Scenery: Delete scene", function() L.delete_scene(scene, keep_items) end)
         return
     end
     local prompt = keep_items
         and ("Delete " .. scene.name .. " but keep its items?")
         or ("Delete " .. scene.name .. " and every item inside it?")
-    local answer = reaper.MB(prompt .. "\nThe gap it leaves on the timeline is kept.", "Looptastic", 4)
+    local answer = reaper.MB(prompt .. "\nThe gap it leaves on the timeline is kept.", "Scenery", 4)
     if answer == 6 then
-        undoable("Looptastic: Delete scene", function() L.delete_scene(scene, keep_items) end)
+        undoable("Scenery: Delete scene", function() L.delete_scene(scene, keep_items) end)
     end
 end
 
 local function toggle_link(scene)
-    undoable("Looptastic: Toggle link with next scene", function()
+    undoable("Scenery: Toggle link with next scene", function()
         L.set_linked_to_next(scene, not scene.linked)
     end)
 end
@@ -141,14 +168,14 @@ end
 local function merge_chain(scene, scenes, skip_confirm)
     local chain = L.link_chain(scene, scenes)
     if #chain < 2 then return end
-    local do_merge = function() undoable("Looptastic: Merge linked scenes", function() L.merge_chain(scene, scenes) end) end
+    local do_merge = function() undoable("Scenery: Merge linked scenes", function() L.merge_chain(scene, scenes) end) end
     if skip_confirm or not L.get_config().confirm_destructive then
         do_merge()
         return
     end
     local answer = reaper.MB("Merge " .. #chain .. " linked scenes (" .. chain[1].name .. " through " ..
         chain[#chain].name .. ") into one scene?\nItems stay where they are; only the scene " ..
-        "boundaries are removed.", "Looptastic", 4)
+        "boundaries are removed.", "Scenery", 4)
     if answer == 6 then do_merge() end
 end
 
@@ -192,8 +219,10 @@ end
 
 -- ------------------------------------------------------------------ frame
 
+-- Compares scene identity (not just position) so overlapping/nested regions
+-- that share a start time don't all light up as active together.
 local function row_color(scene, active)
-    if active and math.abs(active.pos - scene.pos) < 1e-9 then return COLOR.playing end
+    if active and active.enum_idx == scene.enum_idx then return COLOR.playing end
     return COLOR.row
 end
 

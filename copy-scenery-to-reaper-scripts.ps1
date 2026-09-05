@@ -1,11 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
-$source = Join-Path $PSScriptRoot 'looptastic'
+$source = Join-Path $PSScriptRoot 'scenery'
 $destinationRoot = 'C:\REAPER\Scripts'
-$destination = Join-Path $destinationRoot 'looptastic'
+$destination = Join-Path $destinationRoot 'scenery'
 
 if (-not (Test-Path -LiteralPath $source -PathType Container)) {
-    throw "Looptastic source folder was not found: $source"
+    throw "Scenery source folder was not found: $source"
 }
 
 if (-not (Test-Path -LiteralPath $destinationRoot -PathType Container)) {
@@ -18,4 +18,4 @@ if (Test-Path -LiteralPath $destination -PathType Container) {
 
 Copy-Item -LiteralPath $source -Destination $destinationRoot -Recurse -Force
 
-Write-Host "Copied Looptastic to $destination"
+Write-Host "Copied Scenery to $destination"

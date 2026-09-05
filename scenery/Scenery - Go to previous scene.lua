@@ -1,14 +1,15 @@
--- Looptastic: Go to next scene
--- Loops the next scene. Moves the edit cursor only when the transport is stopped.
+-- @noindex
+-- Scenery: Go to previous scene
+-- Loops the previous scene. Moves the edit cursor only when the transport is stopped.
 
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
-local L = dofile(script_dir .. "looptastic_lib.lua")
+local L = dofile(script_dir .. "scenery_lib.lua")
 
 local scenes = L.scan_scenes()
 local current = L.active_scene(scenes)
 if not current then return end
 
-local target = scenes[current.num + 1]
+local target = scenes[current.num - 1]
 if not target then return end
 
 if L.is_playing() then
