@@ -189,6 +189,37 @@ function M.chain_bounds(scene, scenes)
     return chain[1].pos, chain[#chain].rgnend, chain
 end
 
+-- Collapses `scene`'s whole link chain into a single scene region spanning
+-- head.pos to tail.rgnend. Items are already positioned in absolute project
+-- time and untouched by this - only the region markers change. Re-scans and
+-- matches by position before each marker edit/delete rather than trusting
+-- stale enum_idx values, since deleting a marker shifts every later one's
+-- enumeration index.
+function M.merge_chain(scene, scenes)
+    local chain = M.link_chain(scene, scenes or M.scan_scenes())
+    if #chain < 2 then return nil end
+    local head_pos, tail_rgnend = chain[1].pos, chain[#chain].rgnend
+
+    local function find(pos)
+        for _, s in ipairs(M.scan_scenes()) do
+            if math.abs(s.pos - pos) < 1e-6 then return s end
+        end
+    end
+
+    for i = #chain, 2, -1 do
+        local s = find(chain[i].pos)
+        if s then reaper.DeleteProjectMarkerByIndex(0, s.enum_idx) end
+    end
+
+    local head = find(head_pos)
+    if head then
+        reaper.SetProjectMarkerByIndex2(0, head.enum_idx, true, head.pos, tail_rgnend, head.id,
+            M.scene_name(head.num, head.label, false), head.color, 0)
+    end
+    M.renumber_scenes()
+    return head and { pos = head.pos, rgnend = tail_rgnend, name = head.name, num = head.num }
+end
+
 -- Removes the region, and its items unless keep_items is true; the timeline gap is left in place.
 function M.delete_scene(scene, keep_items)
     if not keep_items then

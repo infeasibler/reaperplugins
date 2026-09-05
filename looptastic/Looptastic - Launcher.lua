@@ -140,14 +140,35 @@ local function toggle_link(scene)
     end)
 end
 
-local function scene_menu(scene, scene_count)
+local function merge_chain(scene, scenes, skip_confirm)
+    local chain = L.link_chain(scene, scenes)
+    if #chain < 2 then return end
+    local do_merge = function() undoable("Looptastic: Merge linked scenes", function() L.merge_chain(scene, scenes) end) end
+    if skip_confirm or not L.get_config().confirm_destructive then
+        do_merge()
+        return
+    end
+    local answer = reaper.MB("Merge " .. #chain .. " linked scenes (" .. chain[1].name .. " through " ..
+        chain[#chain].name .. ") into one scene?\nItems stay where they are; only the scene " ..
+        "boundaries are removed.", "Looptastic", 4)
+    if answer == 6 then do_merge() end
+end
+
+local function scene_menu(scene, scenes)
     gfx.x, gfx.y = mouse.x, mouse.y
+    local scene_count = #scenes
     local has_next = scene.num < scene_count
+    local in_chain = #L.link_chain(scene, scenes) >= 2
     local items = { "Rename...", "Set length...", "Duplicate", "" }
     local link_idx
     if has_next then
         items[#items + 1] = scene.linked and "Unlink from next" or "Link with next"
         link_idx = #items
+    end
+    local merge_idx
+    if in_chain then
+        items[#items + 1] = "Merge linked scenes"
+        merge_idx = #items
     end
     items[#items + 1] = ""
     items[#items + 1] = "Delete scene and its items"
@@ -160,6 +181,7 @@ local function scene_menu(scene, scene_count)
     elseif choice == 2 then resize_scene(scene, scene_count)
     elseif choice == 3 then duplicate_scene(scene)
     elseif has_next and choice == link_idx then toggle_link(scene)
+    elseif in_chain and choice == merge_idx then merge_chain(scene, scenes)
     elseif choice == delete_all_idx then delete_scene(scene, false)
     elseif choice == delete_keep_idx then delete_scene(scene, true)
     end
@@ -194,7 +216,7 @@ local function draw_scene_list(scenes, top, height)
             if hovered and mouse.lclick then
                 if mouse.double then L.jump_to(scene, scenes) else switch_scene(scene) end
             elseif hovered and mouse.rclick then
-                scene_menu(scene, #scenes)
+                scene_menu(scene, scenes)
             end
 
             -- links this scene to its successor so they loop together as one unit
