@@ -95,7 +95,10 @@ local function follow()
 
     local scene = L.active_scene(scenes)
     if scene and (last_scene_pos == nil or math.abs(scene.pos - last_scene_pos) > 1e-9) then
-        L.set_loop_to(scene, false)
+        -- linked scenes loop as one unit spanning the whole chain, re-scoped
+        -- to just the current scene once it's no longer linked to anything
+        local start, stop = L.chain_bounds(scene, scenes)
+        L.set_loop_to({ pos = start, rgnend = stop }, false)
         last_scene_pos = scene.pos
     end
 end

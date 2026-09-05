@@ -21,7 +21,7 @@ The engine snapshots item GUIDs when recording starts (`GetPlayState()` bit 4), 
 
 Originally spec'd as a `CSurf_OnRecord()`-driven quantized-start/stop action; superseded by Phase 2's simpler approach of letting recording start/stop immediately and bar-aligning the resulting item afterwards in `apply_loop_source_to_new_items`, which works uniformly regardless of what started/stopped the recording (native command included).
 
-## Phase 4 - Link consecutive scenes (spec only)
+## Phase 4 - Link consecutive scenes (implemented)
 
 Lets two or more *consecutive* scenes loop together as a single unit instead of individually.
 

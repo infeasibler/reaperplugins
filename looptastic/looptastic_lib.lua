@@ -89,6 +89,9 @@ local function scene_pattern()
 end
 
 -- All scene regions ordered by timeline position; `num` is the positional number.
+-- A trailing " >>" in the region name marks the scene as linked to its
+-- immediate successor (see M.link_chain); it's stripped out of `label` so
+-- rename dialogs never see it.
 function M.scan_scenes()
     local scenes = {}
     local i = 0
@@ -98,9 +101,11 @@ function M.scan_scenes()
         if isrgn then
             local _, label = name:match(scene_pattern())
             if label then
+                local linked = label:match(">>%s*$") ~= nil
+                if linked then label = label:gsub("%s*>>%s*$", "") end
                 scenes[#scenes + 1] = {
                     enum_idx = i, pos = pos, rgnend = rgnend,
-                    name = name, label = label, id = markrgnindex, color = color,
+                    name = name, label = label, linked = linked, id = markrgnindex, color = color,
                 }
             end
         end
@@ -111,11 +116,11 @@ function M.scan_scenes()
     return scenes
 end
 
-function M.scene_name(n, label)
-    if label and label ~= "" then
-        return M.SCENE_PREFIX .. " " .. n .. " " .. label
-    end
-    return M.SCENE_PREFIX .. " " .. n
+function M.scene_name(n, label, linked)
+    local base = (label and label ~= "")
+        and (M.SCENE_PREFIX .. " " .. n .. " " .. label)
+        or (M.SCENE_PREFIX .. " " .. n)
+    return linked and (base .. " >>") or base
 end
 
 local function write_scene(s, name)
@@ -124,21 +129,64 @@ end
 
 function M.renumber_scenes()
     for _, s in ipairs(M.scan_scenes()) do
-        local wanted = M.scene_name(s.num, s.label)
+        local wanted = M.scene_name(s.num, s.label, s.linked)
         if s.name ~= wanted then write_scene(s, wanted) end
     end
 end
 
 function M.rename_scene(scene, label)
-    write_scene(scene, M.scene_name(scene.num, label))
+    write_scene(scene, M.scene_name(scene.num, label, scene.linked))
 end
 
 -- Only the last scene can be resized; earlier ones would overlap their neighbour.
 function M.set_scene_length(scene, bars)
     local stop = M.bars_to_time(scene.pos, bars)
     reaper.SetProjectMarkerByIndex2(0, scene.enum_idx, true, scene.pos, stop, scene.id,
-        M.scene_name(scene.num, scene.label), scene.color, 0)
+        M.scene_name(scene.num, scene.label, scene.linked), scene.color, 0)
     return stop
+end
+
+-- ------------------------------------------------------------ link chains
+
+function M.is_linked_to_next(scene)
+    return scene.linked == true
+end
+
+function M.set_linked_to_next(scene, linked)
+    write_scene(scene, M.scene_name(scene.num, scene.label, linked))
+end
+
+-- The full ordered chain of consecutive linked scenes containing `scene`,
+-- regardless of whether it's the head, middle, or tail of that chain.
+function M.link_chain(scene, scenes)
+    scenes = scenes or M.scan_scenes()
+    local head = scene
+    while true do
+        local prev = scenes[head.num - 1]
+        if prev and prev.linked then head = prev else break end
+    end
+    local chain = { head }
+    local current = head
+    while current.linked do
+        local nxt = scenes[current.num + 1]
+        if not nxt then break end
+        chain[#chain + 1] = nxt
+        current = nxt
+    end
+    return chain
+end
+
+function M.active_link_chain(scenes)
+    scenes = scenes or M.scan_scenes()
+    local scene = M.active_scene(scenes)
+    if not scene then return nil end
+    return M.link_chain(scene, scenes)
+end
+
+-- The loop range spanning `scene`'s whole link chain (just itself if unlinked).
+function M.chain_bounds(scene, scenes)
+    local chain = M.link_chain(scene, scenes)
+    return chain[1].pos, chain[#chain].rgnend, chain
 end
 
 -- Removes the region, and its items unless keep_items is true; the timeline gap is left in place.
@@ -294,8 +342,9 @@ function M.due_record_stop(play_pos, prev_play_pos)
     return true
 end
 
-function M.jump_to(scene)
-    M.set_loop_to(scene, false)
+function M.jump_to(scene, scenes)
+    local start, stop = M.chain_bounds(scene, scenes)
+    M.set_loop_to({ pos = start, rgnend = stop }, false)
     reaper.SetEditCurPos(scene.pos, false, true)
 end
 

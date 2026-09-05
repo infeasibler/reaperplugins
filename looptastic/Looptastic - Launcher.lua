@@ -134,15 +134,34 @@ local function delete_scene(scene, keep_items, skip_confirm)
     end
 end
 
+local function toggle_link(scene)
+    undoable("Looptastic: Toggle link with next scene", function()
+        L.set_linked_to_next(scene, not scene.linked)
+    end)
+end
+
 local function scene_menu(scene, scene_count)
     gfx.x, gfx.y = mouse.x, mouse.y
-    local choice = gfx.showmenu("Rename...|Set length...|Duplicate||Delete scene and its items|" ..
-        "Delete scene, keep items")
+    local has_next = scene.num < scene_count
+    local items = { "Rename...", "Set length...", "Duplicate", "" }
+    local link_idx
+    if has_next then
+        items[#items + 1] = scene.linked and "Unlink from next" or "Link with next"
+        link_idx = #items
+    end
+    items[#items + 1] = ""
+    items[#items + 1] = "Delete scene and its items"
+    local delete_all_idx = #items
+    items[#items + 1] = "Delete scene, keep items"
+    local delete_keep_idx = #items
+
+    local choice = gfx.showmenu(table.concat(items, "|"))
     if choice == 1 then rename_scene(scene)
     elseif choice == 2 then resize_scene(scene, scene_count)
     elseif choice == 3 then duplicate_scene(scene)
-    elseif choice == 4 then delete_scene(scene, false)
-    elseif choice == 5 then delete_scene(scene, true)
+    elseif has_next and choice == link_idx then toggle_link(scene)
+    elseif choice == delete_all_idx then delete_scene(scene, false)
+    elseif choice == delete_keep_idx then delete_scene(scene, true)
     end
 end
 
@@ -163,18 +182,28 @@ local function draw_scene_list(scenes, top, height)
     local step = ROW.h + ROW.gap
     scroll = math.min(math.max(0, scroll), math.max(0, #scenes * step - height))
 
+    local link_w = 28
     for _, scene in ipairs(scenes) do
         local y = top + (scene.num - 1) * step - scroll
         if y + ROW.h > top and y < top + height then
-            local x, w = PAD, gfx.w - PAD * 2
+            local x, w = PAD, gfx.w - PAD * 2 - link_w - ROW.gap
             local hovered = hit(x, y, w, ROW.h)
             panel(x, y, w, ROW.h, row_color(scene, active), hovered and mouse.lclick)
             draw_label(scene.name, x, y, w, ROW.h)
 
             if hovered and mouse.lclick then
-                if mouse.double then L.jump_to(scene) else switch_scene(scene) end
+                if mouse.double then L.jump_to(scene, scenes) else switch_scene(scene) end
             elseif hovered and mouse.rclick then
                 scene_menu(scene, #scenes)
+            end
+
+            -- links this scene to its successor so they loop together as one unit
+            if scene.num < #scenes then
+                local link_x = x + w + ROW.gap
+                local label = scene.linked and ">>" or "- -"
+                if button(link_x, y, link_w, ROW.h, label, scene.linked and COLOR.playing or COLOR.button) then
+                    toggle_link(scene)
+                end
             end
         end
     end
