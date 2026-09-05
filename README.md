@@ -21,4 +21,4 @@ A [ReaPack](https://reapack.com/) repository of REAPER ReaScripts.
 
 ## Packaging
 
-Package metadata follows [reapack-index's Packaging Documentation](https://github.com/cfillion/reapack-index/wiki/Packaging-Documentation). `index.xml` is regenerated automatically by GitHub Actions (`.github/workflows/deploy.yml`) on every push to `main`.
+`index.xml` is maintained as a static text file. When releasing a new version, update the package version, changelog, and source URLs in the index alongside the script metadata.
