@@ -531,8 +531,11 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
             local item = reaper.GetTrackMediaItem(track, k)
             local guid = item_guid(item)
             local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            -- Include items that overlap with the scene: started before scene end AND
+            -- extended past scene start (covers cross-scene recordings like end of scene 5 into scene 6)
             if guid and not existing_guids[guid]
-                and pos >= scene.pos - 1e-9 and pos < scene.rgnend - 1e-9 then
+                and pos < scene.rgnend - 1e-9 and (pos + len) > scene.pos + 1e-9 then
                 targets[#targets + 1] = { track = track, item = item, pos = pos }
             end
         end
@@ -542,11 +545,28 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
     for _, target in ipairs(targets) do
         local track, item, pos = target.track, target.item, target.pos
         local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-        -- If recording extends past the scene boundary, it wrapped around the loop.
-        -- The usable content starts at scene.pos (bar 1), not at the item's original pos.
-        local wraps_past_scene = recorded_end > scene.rgnend + 1e-9
-        local effective_start_pos = wraps_past_scene and scene.pos or pos
+        -- If the item started before this scene (cross-scene recording) or extended
+        -- past the scene boundary (wrap-around), use the scene start as the effective
+        -- starting position for bar-snapping, since that's where usable content begins.
+        local effective_start_pos = pos
+        if pos < scene.pos - 1e-9 or recorded_end > scene.rgnend + 1e-9 then
+            effective_start_pos = scene.pos
+        end
         local snapped_pos = math.min(scene.rgnend, math.max(scene.pos, M.snap_to_bar(effective_start_pos, "next")))
+
+        -- Trim pre-scene portion if the item started before this scene
+        if pos < snapped_pos - 1e-9 then
+            local right = reaper.SplitMediaItem(item, snapped_pos)
+            if right then
+                reaper.DeleteTrackMediaItem(track, item)
+                item = right
+                -- Ensure the trimmed right piece is positioned at snapped_pos
+                reaper.SetMediaItemInfo_Value(item, "D_POSITION", snapped_pos)
+                pos = snapped_pos
+                recorded_end = snapped_pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            end
+        end
+
         -- a small overshoot past a bar (e.g. from the quantized-stop margin, or
         -- just late-stopping) should trim back to that bar, not pad a whole
         -- extra one on top of it
@@ -556,13 +576,6 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
         end
         local scene_length = scene.rgnend - snapped_pos
         if snapped_end > snapped_pos + 1e-9 and scene_length > 0 then
-            if pos < snapped_pos - 1e-9 then
-                local right = reaper.SplitMediaItem(item, snapped_pos)
-                if right then
-                    reaper.DeleteTrackMediaItem(track, item)
-                    item = right
-                end
-            end
             if recorded_end > snapped_end + 1e-9 then
                 local right = reaper.SplitMediaItem(item, snapped_end)
                 if right then reaper.DeleteTrackMediaItem(track, right) end

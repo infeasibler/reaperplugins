@@ -31,7 +31,7 @@ local next_poll = 0
 -- Recording starts and stops immediately (native Record button, launcher Rec
 -- button, and the standalone action all behave the same); bar-alignment is
 -- applied purely in post-processing by apply_loop_source_to_new_items.
-local function service_recording()
+local function service_recording(stop_ref_pos)
     local recording = L.is_recording()
     local cfg = L.get_config()
     if not cfg.record_auto_loop then
@@ -43,8 +43,13 @@ local function service_recording()
 
     if recording and not was_recording then
         recording_snapshot = L.snapshot_item_guids()
-        recording_scene = L.active_scene()
+        recording_scene = nil
     elseif not recording and was_recording then
+        -- Resolve by the actual last-known play position, not active_scene()'s
+        -- cursor lookup - REAPER doesn't always move the edit cursor to the
+        -- stop position, so a cursor-based lookup can still resolve to wherever
+        -- recording started (e.g. an earlier scene) instead of where it ended.
+        recording_scene = stop_ref_pos and L.scene_at(stop_ref_pos) or L.active_scene()
         if recording_snapshot and recording_scene then
             reaper.PreventUIRefresh(1)
             reaper.Undo_BeginBlock2(0)
@@ -68,9 +73,10 @@ local function follow()
     if play_pos and L.due_record_stop(play_pos, last_play_pos) then
         reaper.Main_OnCommand(1013, 0)
     end
+    local stop_ref_pos = play_pos or last_play_pos
     last_play_pos = play_pos
 
-    service_recording()
+    service_recording(stop_ref_pos)
 
     if not cfg.follow_enabled then return end
 
