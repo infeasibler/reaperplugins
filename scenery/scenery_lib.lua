@@ -541,8 +541,12 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
     local processed = 0
     for _, target in ipairs(targets) do
         local track, item, pos = target.track, target.item, target.pos
-        local snapped_pos = math.min(scene.rgnend, math.max(scene.pos, M.snap_to_bar(pos, "next")))
         local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        -- If recording extends past the scene boundary, it wrapped around the loop.
+        -- The usable content starts at scene.pos (bar 1), not at the item's original pos.
+        local wraps_past_scene = recorded_end > scene.rgnend + 1e-9
+        local effective_start_pos = wraps_past_scene and scene.pos or pos
+        local snapped_pos = math.min(scene.rgnend, math.max(scene.pos, M.snap_to_bar(effective_start_pos, "next")))
         -- a small overshoot past a bar (e.g. from the quantized-stop margin, or
         -- just late-stopping) should trim back to that bar, not pad a whole
         -- extra one on top of it

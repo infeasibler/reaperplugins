@@ -6,7 +6,7 @@
 				<description><![CDATA[Scene-based looping toolkit for REAPER with a launcher panel, scene actions, a follow-along engine, and bar-quantized recording.]]></description>
 				<link rel="website">https://github.com/infeasibler/reaperplugins</link>
 			</metadata>
-			<version name="0.1.0" author="infeasibler" time="2026-09-05T00:00:00Z">
+			<version name="0.1.1" author="infeasibler" time="2026-09-05T00:00:00Z">
 				<changelog><![CDATA[Initial Scenery release.]]></changelog>
 				<source main="main" type="script" file="Scenery - Launcher.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Launcher.lua</source>
 				<source main="main" type="script" file="Scenery - New scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene.lua</source>
