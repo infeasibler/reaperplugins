@@ -12,7 +12,10 @@ if not current then return end
 local target = scenes[current.num + 1]
 if not target then return end
 
-if L.is_playing() then
+if L.is_playing() and L.get_config().wait_for_scene_end then
+    L.wait_for_scene(target, scenes)
+    if not L.engine_running() then L.start_engine(script_dir) end
+elseif L.is_playing() then
     L.set_loop_to(target)
 else
     reaper.SetEditCurPos(target.pos, true, false)

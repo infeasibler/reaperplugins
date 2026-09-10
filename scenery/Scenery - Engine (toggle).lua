@@ -31,7 +31,7 @@ local next_poll = 0
 -- Recording starts and stops immediately (native Record button, launcher Rec
 -- button, and the standalone action all behave the same); bar-alignment is
 -- applied purely in post-processing by apply_loop_source_to_new_items.
-local function service_recording(stop_ref_pos)
+local function service_recording()
     local recording = L.is_recording()
     local cfg = L.get_config()
     if not cfg.record_auto_loop then
@@ -43,13 +43,8 @@ local function service_recording(stop_ref_pos)
 
     if recording and not was_recording then
         recording_snapshot = L.snapshot_item_guids()
-        recording_scene = nil
+        recording_scene = L.active_scene()
     elseif not recording and was_recording then
-        -- Resolve by the actual last-known play position, not active_scene()'s
-        -- cursor lookup - REAPER doesn't always move the edit cursor to the
-        -- stop position, so a cursor-based lookup can still resolve to wherever
-        -- recording started (e.g. an earlier scene) instead of where it ended.
-        recording_scene = stop_ref_pos and L.scene_at(stop_ref_pos) or L.active_scene()
         if recording_snapshot and recording_scene then
             reaper.PreventUIRefresh(1)
             reaper.Undo_BeginBlock2(0)
@@ -73,10 +68,33 @@ local function follow()
     if play_pos and L.due_record_stop(play_pos, last_play_pos) then
         reaper.Main_OnCommand(1013, 0)
     end
-    local stop_ref_pos = play_pos or last_play_pos
+
+    local waiting = L.get_waiting_scene()
+    if waiting and play_pos then
+        if play_pos >= waiting.arm_at then
+            L.clear_waiting_scene()
+            L.set_loop_to({ pos = waiting.start, rgnend = waiting.rgnend })
+            reaper.SetEditCurPos(waiting.pos, false, true)
+            L.set_active_scene({ id = waiting.id })
+            last_play_pos = play_pos
+            return
+        end
+    elseif not play_pos then
+        L.clear_waiting_scene()
+        L.clear_next_scene()
+    end
+
     last_play_pos = play_pos
 
-    service_recording(stop_ref_pos)
+    service_recording()
+
+    local next_scene_id = L.get_next_scene_id()
+    if next_scene_id and play_pos then
+        local active_scene = L.active_scene()
+        if active_scene and active_scene.id == next_scene_id then
+            L.clear_next_scene()
+        end
+    end
 
     if not cfg.follow_enabled then return end
 
@@ -91,12 +109,14 @@ local function follow()
         local cursor_moved = (not playing) and math.abs(reaper.GetCursorPosition() - pending.cursor) > 1e-6
         if entered then
             L.clear_pending()
+            L.clear_next_scene()
             L.set_active_range(pending.pos, pending.rgnend)
             local entered_scene = L.active_scene(scenes)
             last_scene_id = entered_scene and entered_scene.id or nil
             return
         elseif cursor_moved then
             L.clear_pending()
+            L.clear_next_scene()
         else
             return
         end
@@ -129,6 +149,8 @@ end
 reaper.atexit(function()
     reaper.SetExtState(L.EXT_SECTION, "engine_running", "0", false)
     L.clear_pending()
+    L.clear_waiting_scene()
+    L.clear_next_scene()
     L.clear_record_stop_pending()
     was_recording = false
     recording_snapshot = nil

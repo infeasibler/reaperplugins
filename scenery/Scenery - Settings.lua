@@ -12,17 +12,18 @@ local defaults = table.concat({
     cfg.follow_enabled and "1" or "0",
     cfg.record_auto_loop and "1" or "0",
     cfg.record_end_of_bar and "1" or "0",
+    cfg.wait_for_scene_end and "1" or "0",
 }, ",")
 
 local ok, input = reaper.GetUserInputs(
-    "Scenery - Settings", 5,
+    "Scenery - Settings", 6,
     "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,Record auto-loop (1/0):," ..
-    "Record to end of bar (1/0):,extrawidth=60",
+    "Record to end of bar (1/0):,Wait for scene end when launching (1/0):,extrawidth=60",
     defaults)
 if not ok then return end
 
-local bars, r, g, b, follow, record_auto_loop, record_end_of_bar =
-    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*)$")
+local bars, r, g, b, follow, record_auto_loop, record_end_of_bar, wait_for_scene_end =
+    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*)$")
 if not bars then
     reaper.MB("Could not parse the settings. Colour must be three numbers, e.g. 48,128,192.", "Scenery", 0)
     return
@@ -43,3 +44,4 @@ L.set_config("region_color", string.format("%d,%d,%d", clamp_channel(r), clamp_c
 L.set_config("follow_enabled", follow:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_auto_loop", record_auto_loop:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_end_of_bar", record_end_of_bar:match("^%s*1%s*$") and "1" or "0")
+L.set_config("wait_for_scene_end", wait_for_scene_end:match("^%s*1%s*$") and "1" or "0")

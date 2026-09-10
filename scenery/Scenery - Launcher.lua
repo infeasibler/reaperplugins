@@ -45,6 +45,7 @@ local COLOR = {
     row       = { 0.23, 0.25, 0.29 },
     row_hover = { 0.29, 0.32, 0.38 },
     playing   = { 0.18, 0.55, 0.34 },
+    next      = { 0.82, 0.65, 0.16 },
     button    = { 0.20, 0.22, 0.26 },
     text      = { 0.90, 0.90, 0.90 },
     dim       = { 0.60, 0.62, 0.66 },
@@ -113,7 +114,12 @@ local function duplicate_scene(source, copy_fn, description)
 end
 
 local function switch_scene(scene)
-    L.queue_scene(scene)
+    local cfg = L.get_config()
+    if cfg.wait_for_scene_end and L.is_playing() then
+        L.wait_for_scene(scene)
+    else
+        L.queue_scene(scene)
+    end
     if not L.engine_running() then L.start_engine(script_dir) end
 end
 
@@ -224,8 +230,9 @@ end
 
 -- Compares scene identity (not just position) so overlapping/nested regions
 -- that share a start time don't all light up as active together.
-local function row_color(scene, active)
+local function row_color(scene, active, next_id)
     if active and active.enum_idx == scene.enum_idx then return COLOR.playing end
+    if next_id and scene.id == next_id then return COLOR.next end
     return COLOR.row
 end
 
@@ -236,6 +243,7 @@ local function draw_scene_list(scenes, top, height)
     end
 
     local active = L.active_scene(scenes)
+    local next_id = L.get_next_scene_id()
     local step = ROW.h + ROW.gap
     scroll = math.min(math.max(0, scroll), math.max(0, #scenes * step - height))
 
@@ -245,7 +253,7 @@ local function draw_scene_list(scenes, top, height)
         if y + ROW.h > top and y < top + height then
             local x, w = PAD, gfx.w - PAD * 2 - link_w - ROW.gap
             local hovered = hit(x, y, w, ROW.h)
-            panel(x, y, w, ROW.h, row_color(scene, active), hovered and mouse.lclick)
+            panel(x, y, w, ROW.h, row_color(scene, active, next_id), hovered and mouse.lclick)
             draw_label(scene.name, x, y, w, ROW.h)
 
             if hovered and mouse.lclick then
@@ -313,12 +321,17 @@ local function draw_settings(y, cfg)
     if button(PAD, y + (step + ROW.gap) * 5, w, step, end_of_bar_label) then
         L.set_config("record_end_of_bar", cfg.record_end_of_bar and "0" or "1")
     end
+
+    local wait_label = (cfg.wait_for_scene_end and "[x] " or "[ ] ") .. "Wait for scene end when launching"
+    if button(PAD, y + (step + ROW.gap) * 6, w, step, wait_label) then
+        L.set_config("wait_for_scene_end", cfg.wait_for_scene_end and "0" or "1")
+    end
 end
 
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, cfg)
     local w = gfx.w - PAD * 2
-    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 4 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
+    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 5 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end

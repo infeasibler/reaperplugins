@@ -27,6 +27,7 @@ function M.get_config()
         follow_enabled      = ext_get("follow_enabled", "1") == "1",
         record_auto_loop    = ext_get("record_auto_loop", "1") == "1",
         record_end_of_bar   = ext_get("record_end_of_bar", "1") == "1",
+        wait_for_scene_end  = ext_get("wait_for_scene_end", "0") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
         poll_interval       = tonumber(ext_get("poll_interval", "0.008")) or 0.008,
     }
@@ -337,6 +338,79 @@ function M.clear_pending()
     reaper.DeleteExtState(M.EXT_SECTION, "pending_cursor", false)
 end
 
+function M.wait_for_scene(scene, scenes)
+    if not M.is_playing() then
+        M.jump_to(scene, scenes)
+        return
+    end
+
+    scenes = scenes or M.scan_scenes()
+    local current = M.active_scene(scenes)
+    if not current then
+        M.jump_to(scene, scenes)
+        return
+    end
+
+    M.set_next_scene(scene)
+    local current_start, current_end = M.chain_bounds(current, scenes)
+    local last_bar = M.measure_start_time(M.measure_at(current_end - 1e-9))
+    local arm_at = math.max(current_start, last_bar)
+    if M.cursor_position() < arm_at then
+        M.set_waiting_scene(scene, scenes, arm_at)
+        return
+    end
+
+    local target_start, target_end = M.chain_bounds(scene, scenes)
+    M.clear_waiting_scene()
+    M.set_loop_to({ pos = target_start, rgnend = target_end })
+    reaper.SetEditCurPos(scene.pos, false, true)
+    M.set_active_scene(scene)
+end
+
+function M.set_waiting_scene(scene, scenes, arm_at)
+    local target_start, target_end = M.chain_bounds(scene, scenes)
+    reaper.SetExtState(M.EXT_SECTION, "waiting_start", tostring(target_start), false)
+    reaper.SetExtState(M.EXT_SECTION, "waiting_end", tostring(target_end), false)
+    reaper.SetExtState(M.EXT_SECTION, "waiting_pos", tostring(scene.pos), false)
+    reaper.SetExtState(M.EXT_SECTION, "waiting_id", tostring(scene.id or ""), false)
+    reaper.SetExtState(M.EXT_SECTION, "waiting_arm_at", tostring(arm_at), false)
+end
+
+function M.get_waiting_scene()
+    local start = tonumber(reaper.GetExtState(M.EXT_SECTION, "waiting_start"))
+    local stop = tonumber(reaper.GetExtState(M.EXT_SECTION, "waiting_end"))
+    local pos = tonumber(reaper.GetExtState(M.EXT_SECTION, "waiting_pos"))
+    local arm_at = tonumber(reaper.GetExtState(M.EXT_SECTION, "waiting_arm_at"))
+    if not start or not stop or not pos or not arm_at then return nil end
+    return {
+        start = start,
+        rgnend = stop,
+        pos = pos,
+        id = tonumber(reaper.GetExtState(M.EXT_SECTION, "waiting_id")),
+        arm_at = arm_at,
+    }
+end
+
+function M.clear_waiting_scene()
+    reaper.DeleteExtState(M.EXT_SECTION, "waiting_start", false)
+    reaper.DeleteExtState(M.EXT_SECTION, "waiting_end", false)
+    reaper.DeleteExtState(M.EXT_SECTION, "waiting_pos", false)
+    reaper.DeleteExtState(M.EXT_SECTION, "waiting_id", false)
+    reaper.DeleteExtState(M.EXT_SECTION, "waiting_arm_at", false)
+end
+
+function M.set_next_scene(scene)
+    reaper.SetExtState(M.EXT_SECTION, "next_scene_id", tostring(scene.id or ""), false)
+end
+
+function M.get_next_scene_id()
+    return tonumber(reaper.GetExtState(M.EXT_SECTION, "next_scene_id"))
+end
+
+function M.clear_next_scene()
+    reaper.DeleteExtState(M.EXT_SECTION, "next_scene_id", false)
+end
+
 -- ---------------------------------------------------------------- queueing
 
 -- Switches to a scene immediately; smooth seek (if enabled) gives it a quantized
@@ -417,6 +491,8 @@ function M.due_record_stop(play_pos, prev_play_pos)
 end
 
 function M.jump_to(scene, scenes)
+    M.clear_waiting_scene()
+    M.clear_next_scene()
     local start, stop = M.chain_bounds(scene, scenes)
     M.set_loop_to({ pos = start, rgnend = stop }, M.is_playing())
     M.set_active_scene(scene)

@@ -21,13 +21,13 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 | `Scenery - Go to next scene` / `Scenery - Go to previous scene` | Moves the loop to the neighbouring scene. |
 | `Scenery - Toggle link with next scene` | Links or unlinks the active scene with its immediate successor, so the engine can loop the linked scenes as one range. |
 | `Scenery - Toggle record (quantized)` | Starts/stops recording immediately, same as REAPER's native Record command, but also makes sure the engine is running so new items get bar-aligned afterwards. Handy as a bindable equivalent to the launcher's `Rec` button. |
-| `Scenery - Settings` | Default scene length, region colour, auto-follow on/off, record auto-loop on/off, and record-to-end-of-bar on/off. The launcher settings also include destructive-action confirmation and REAPER's Smooth seek preference. |
+| `Scenery - Settings` | Default scene length, region colour, auto-follow on/off, record auto-loop on/off, record-to-end-of-bar on/off, and waiting for the current scene to end when launching. The launcher settings also include destructive-action confirmation and REAPER's Smooth seek preference. |
 | `Scenery - Engine (toggle)` | Background service that keeps the loop on the scene, or its linked chain, under the cursor and handles recording post-processing. Run again to stop. The launcher and standalone recording action start it automatically when needed. |
 
 ## Behaviour notes
 
 - Scene lengths follow the project tempo and time-signature map, so 8 bars stays 8 bars across meter changes.
-- Switching scenes from the launcher moves the loop points and seeks immediately; enable "Smooth seek" in the launcher's Settings for REAPER to quantize the audible transition to the next bar/measure instead of cutting instantly.
+- Switching scenes from the launcher moves the loop points and seeks immediately by default; enable "Wait for scene end when launching" to defer single-click launches until the current linked scene chain ends. Double-clicking always switches immediately. "Smooth seek" in the launcher's Settings can additionally quantize the audible transition to the next bar/measure.
 - Creating a scene never moves the play cursor. If the transport is rolling, playback continues and wraps into the new loop when it reaches it — the engine holds off auto-follow until then.
 - Scene regions can be renamed to anything via the launcher's Rename... or directly in the Region Manager; Scenery never rewrites an existing scene's name. Its position number (used for next/previous navigation) is always computed from timeline order, not stored in the name.
 - New/Clone/Copy name the region they create `Scene N`, where `N` is the region count at the time of creation — so numbering stays sensible even if earlier regions have been freely renamed.
