@@ -21,7 +21,7 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 | `Scenery - Go to next scene` / `Scenery - Go to previous scene` | Moves the loop to the neighbouring scene. |
 | `Scenery - Toggle link with next scene` | Links or unlinks the active scene with its immediate successor, so the engine can loop the linked scenes as one range. |
 | `Scenery - Toggle record (quantized)` | Starts/stops recording immediately, same as REAPER's native Record command, but also makes sure the engine is running so new items get bar-aligned afterwards. Handy as a bindable equivalent to the launcher's `Rec` button. |
-| `Scenery - Settings` | Default scene length, region colour, auto-follow on/off, record auto-loop on/off, record-to-end-of-bar on/off, and waiting for the current scene to end when launching. The launcher settings also include destructive-action confirmation and REAPER's Smooth seek preference. |
+| `Scenery - Settings` | Default scene length, region colour, auto-follow on/off, record auto-loop on/off, record-to-end-of-bar on/off, waiting for the current scene to end when launching, and whether Clone/Copy skip tracks already containing media in the destination scene. The launcher settings also include destructive-action confirmation and REAPER's Smooth seek preference. |
 | `Scenery - Engine (toggle)` | Background service that keeps the loop on the scene, or its linked chain, under the cursor and handles recording post-processing. Run again to stop. The launcher and standalone recording action start it automatically when needed. |
 
 ## Behaviour notes
@@ -36,6 +36,7 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 - With record auto-loop enabled and the engine running, the launcher's `Rec` button, the `Toggle record (quantized)` action, and REAPER's native Record button/shortcut all start and stop recording immediately. Afterwards, the recorded item's start is trimmed forward to the next bar boundary (cutting off the pickup before the first full bar) and its end is rounded up to a bar boundary before it is set to loop through the scene. The launcher and standalone action start the engine automatically; native Record requires the engine to already be running for this processing.
 - "Record to end of bar" (on by default) is independent of auto-loop: when stopping a recording, it delays the actual stop until just past the end of the current bar so nothing is lost, even if auto-loop is off. The launcher and standalone recording action start the engine automatically when this setting requires it, since the engine polls for the deferred stop point.
 - Every scene action is a single undo step.
+- Clone and Copy skip a track when the destination scene already contains overlapping media on that track. This is enabled by default and can be changed in Settings.
 
 ## Current limitations
 

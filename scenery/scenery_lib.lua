@@ -28,6 +28,7 @@ function M.get_config()
         record_auto_loop    = ext_get("record_auto_loop", "1") == "1",
         record_end_of_bar   = ext_get("record_end_of_bar", "1") == "1",
         wait_for_scene_end  = ext_get("wait_for_scene_end", "0") == "1",
+        skip_occupied_tracks = ext_get("skip_occupied_tracks", "1") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
         poll_interval       = tonumber(ext_get("poll_interval", "0.008")) or 0.008,
     }
@@ -522,6 +523,23 @@ local function unique_scene_name(base, scenes)
     return base .. " - " .. n
 end
 
+local function tracks_with_items(start_pos, end_pos)
+    local occupied = {}
+    for t = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, t)
+        for k = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, k)
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            if pos < end_pos - 1e-9 and item_end > start_pos + 1e-9 then
+                occupied[t] = true
+                break
+            end
+        end
+    end
+    return occupied
+end
+
 function M.create_scene(bars)
     local cfg = M.get_config()
     local scenes = M.scan_scenes()
@@ -535,18 +553,21 @@ end
 -- Appends a new scene at the configured default bar length, tiling the
 -- source content to fill it (or trimming it, if the default is shorter).
 function M.duplicate_scene(source, copy_fn)
-    local bars = M.get_config().default_bars
+    local cfg = M.get_config()
+    local bars = cfg.default_bars
     local scene = M.create_scene(bars)
+    local occupied_tracks = cfg.skip_occupied_tracks
+        and tracks_with_items(scene.pos, scene.rgnend) or nil
     local unit = source.rgnend - source.pos
     copy_fn = copy_fn or M.copy_items
     if unit <= 1e-9 then
-        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend)
+        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend, occupied_tracks)
         return scene
     end
     local dest = scene.pos
     while dest < scene.rgnend - 1e-9 do
         local tile_end = math.min(dest + unit, scene.rgnend)
-        copy_fn(source.pos, source.rgnend, dest, tile_end)
+        copy_fn(source.pos, source.rgnend, dest, tile_end, occupied_tracks)
         dest = dest + unit
     end
     return scene
@@ -706,38 +727,40 @@ end
 
 -- Copies every item starting within [src_start, src_end) to the same track,
 -- offset to dest_start and clamped so nothing overruns dest_end.
-local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, link_pool)
+local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, link_pool, occupied_tracks)
     local offset = dest_start - src_start
     local copied = 0
     for t = 0, reaper.CountTracks(0) - 1 do
-        local track = reaper.GetTrack(0, t)
-        local sources = {}
-        for k = 0, reaper.CountTrackMediaItems(track) - 1 do
-            local item = reaper.GetTrackMediaItem(track, k)
-            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-            if pos >= src_start - 1e-9 and pos < src_end - 1e-9 then
-                sources[#sources + 1] = item
+        if not occupied_tracks or not occupied_tracks[t] then
+            local track = reaper.GetTrack(0, t)
+            local sources = {}
+            for k = 0, reaper.CountTrackMediaItems(track) - 1 do
+                local item = reaper.GetTrackMediaItem(track, k)
+                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                if pos >= src_start - 1e-9 and pos < src_end - 1e-9 then
+                    sources[#sources + 1] = item
+                end
             end
-        end
-        for _, item in ipairs(sources) do
-            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + offset
-            -- an item whose offset position already lands at/past dest_end has nothing
-            -- to keep - SplitMediaItem can't split before an item's own start, so it
-            -- would otherwise be copied in full and left overhanging unclamped
-            if pos < dest_end - 1e-9 then
-                local chunk = source_chunk(item, link_pool)
-                if chunk then
-                    local new_item = reaper.AddMediaItemToTrack(track)
-                    reaper.SetItemStateChunk(new_item, chunk, false)
-                    local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-                    reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", pos)
-                    if pos + len > dest_end + 1e-9 then
-                        -- split rather than shrink D_LENGTH: for MIDI takes the source's own
-                        -- PPQ extents don't follow D_LENGTH, so notes past dest_end would still show
-                        local right = reaper.SplitMediaItem(new_item, dest_end)
-                        if right then reaper.DeleteTrackMediaItem(track, right) end
+            for _, item in ipairs(sources) do
+                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + offset
+                -- an item whose offset position already lands at/past dest_end has nothing
+                -- to keep - SplitMediaItem can't split before an item's own start, so it
+                -- would otherwise be copied in full and left overhanging unclamped
+                if pos < dest_end - 1e-9 then
+                    local chunk = source_chunk(item, link_pool)
+                    if chunk then
+                        local new_item = reaper.AddMediaItemToTrack(track)
+                        reaper.SetItemStateChunk(new_item, chunk, false)
+                        local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", pos)
+                        if pos + len > dest_end + 1e-9 then
+                            -- split rather than shrink D_LENGTH: for MIDI takes the source's own
+                            -- PPQ extents don't follow D_LENGTH, so notes past dest_end would still show
+                            local right = reaper.SplitMediaItem(new_item, dest_end)
+                            if right then reaper.DeleteTrackMediaItem(track, right) end
+                        end
+                        copied = copied + 1
                     end
-                    copied = copied + 1
                 end
             end
         end
@@ -745,12 +768,12 @@ local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, li
     return copied
 end
 
-function M.copy_items(src_start, src_end, dest_start, dest_end)
-    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, false)
+function M.copy_items(src_start, src_end, dest_start, dest_end, occupied_tracks)
+    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, false, occupied_tracks)
 end
 
-function M.copy_items_linked(src_start, src_end, dest_start, dest_end)
-    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, true)
+function M.copy_items_linked(src_start, src_end, dest_start, dest_end, occupied_tracks)
+    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, true, occupied_tracks)
 end
 
 -- ------------------------------------------------------------------ misc
