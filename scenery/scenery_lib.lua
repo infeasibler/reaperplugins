@@ -261,17 +261,20 @@ function M.scene_at(time, scenes)
     return best
 end
 
--- Prefers the scene that was last explicitly selected while the cursor is
--- still inside it, since resolving purely by position is ambiguous whenever
--- regions overlap. Falls back to plain position lookup once it has ended.
+-- Prefers the scene that was last explicitly selected. With cursor-follow off,
+-- that selection stays active even after the edit cursor moves elsewhere.
 function M.active_scene(scenes)
     scenes = scenes or M.scan_scenes()
     local cursor = M.cursor_position()
+    local follow_enabled = M.get_config().follow_enabled
     local active_id = tonumber(reaper.GetExtState(M.EXT_SECTION, "active_id"))
     if active_id then
         for _, s in ipairs(scenes) do
-            if s.id == active_id and cursor >= s.pos and cursor < s.rgnend then
-                return s
+            if s.id == active_id then
+                if not follow_enabled or (cursor >= s.pos and cursor < s.rgnend) then
+                    return s
+                end
+                break
             end
         end
     end
@@ -283,7 +286,9 @@ function M.active_scene(scenes)
             end
         end
     end
-    return M.scene_at(cursor, scenes)
+    local scene = M.scene_at(cursor, scenes)
+    if not follow_enabled and scene then M.set_active_scene(scene) end
+    return scene
 end
 
 -- -------------------------------------------------------------- transport

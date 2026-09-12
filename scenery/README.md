@@ -28,6 +28,7 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 
 - Scene lengths follow the project tempo and time-signature map, so 8 bars stays 8 bars across meter changes.
 - Switching scenes from the launcher moves the loop points and seeks immediately by default; enable "Wait for scene end when launching" to defer single-click launches until the current linked scene chain ends. Double-clicking always switches immediately. "Smooth seek" in the launcher's Settings can additionally quantize the audible transition to the next bar/measure.
+- When "Loop follows cursor" is off, moving the edit cursor into another scene does not change the active scene; launching a scene from the Launcher still changes it explicitly.
 - Creating a scene never moves the play cursor. If the transport is rolling, playback continues and wraps into the new loop when it reaches it — the engine holds off auto-follow until then.
 - Scene regions can be renamed to anything via the launcher's Rename... or directly in the Region Manager; Scenery never rewrites an existing scene's name. Its position number (used for next/previous navigation) is always computed from timeline order, not stored in the name.
 - New/Clone/Copy name the region they create `Scene N`, where `N` is the region count at the time of creation — so numbering stays sensible even if earlier regions have been freely renamed.
