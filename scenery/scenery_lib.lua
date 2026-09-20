@@ -499,10 +499,12 @@ end
 function M.jump_to(scene, scenes)
     M.clear_waiting_scene()
     M.clear_next_scene()
+    local playing = M.is_playing()
     local start, stop = M.chain_bounds(scene, scenes)
-    M.set_loop_to({ pos = start, rgnend = stop }, M.is_playing())
+    if not playing then reaper.SetEditCurPos(scene.pos, false, true) end
+    M.set_loop_to({ pos = start, rgnend = stop }, true)
     M.set_active_scene(scene)
-    reaper.SetEditCurPos(scene.pos, false, true)
+    if playing then reaper.SetEditCurPos(scene.pos, false, true) end
 end
 
 function M.beats_until(target)
