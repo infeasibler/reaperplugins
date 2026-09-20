@@ -522,13 +522,7 @@ end
 -- Alternative to wait_for_scene: instead of arming at the current scene's
 -- natural end, arms `bars` bars ahead of wherever playback is now. Reuses
 -- the same waiting-scene/arm_at polling in the Engine, just with a
--- Alternative to wait_for_scene: instead of arming at the current scene's
--- natural end, arms at the next bar boundary, counted from the active
--- scene's own start, that lands on a multiple of `bars` (e.g. bars=4 fires
--- on the scene's next 4-bar grid line - bar 8, 12, 16... - not simply 4 bars
--- from now). bars=1 fires on every bar boundary, i.e. the next one. Reuses
--- the same waiting-scene/arm_at polling in the Engine, just with a
--- grid-aligned arm time instead of a scene-boundary one.
+-- fixed-offset arm time instead of a scene-boundary one.
 function M.wait_bars(scene, scenes, bars)
     if not M.is_playing() then
         M.jump_to(scene, scenes)
@@ -536,12 +530,7 @@ function M.wait_bars(scene, scenes, bars)
     end
     scenes = scenes or M.scan_scenes()
     M.set_next_scene(scene)
-    bars = math.max(1, math.floor(bars))
-    local current = M.active_scene(scenes)
-    local scene_start_measure = M.measure_at(current and current.pos or M.cursor_position())
-    local bar_in_scene = M.measure_at(M.cursor_position()) - scene_start_measure
-    local next_grid_bar = math.ceil((bar_in_scene + 1) / bars) * bars
-    local arm_at = M.measure_start_time(scene_start_measure + next_grid_bar)
+    local arm_at = M.bars_to_time(M.cursor_position(), bars)
     M.set_waiting_scene(scene, scenes, arm_at)
 end
 
