@@ -8,6 +8,7 @@
 			</metadata>
 			<version name="0.3.0" author="infeasibler" time="2026-09-20T00:00:00Z">
 				<changelog><![CDATA[- Added configurable auto-repeat for scene starts and switches, including a Launcher checkbox and Toggle auto repeat action.
+- Added configurable insertion of Clone/Copy results after the current scene, including a Launcher checkbox and Toggle insert after current scene action.
 - Phrase-based scene switching now uses absolute project bar groups; values 0 and 1 switch immediately, while larger values wait for the next phrase boundary.
 - Launcher and standalone next/previous actions now share the same switching behavior, including smooth-seek alignment.]]></changelog>
 				<source main="main" type="script" file="Scenery - Launcher.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Launcher.lua</source>
@@ -20,6 +21,7 @@
 				<source main="main" type="script" file="Scenery - Settings.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Settings.lua</source>
 				<source main="main" type="script" file="Scenery - Toggle link with next scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Toggle%20link%20with%20next%20scene.lua</source>
 				<source main="main" type="script" file="Scenery - Toggle record (quantized).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Toggle%20record%20(quantized).lua</source>
+				<source main="main" type="script" file="Scenery - Toggle insert after current scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Toggle%20insert%20after%20current%20scene.lua</source>
 				<source main="main" type="script" file="Scenery - Engine (toggle).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Engine%20(toggle).lua</source>
 				<source type="script" file="scenery_lib.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/scenery_lib.lua</source>
 			</version>

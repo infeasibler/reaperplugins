@@ -16,20 +16,21 @@ local defaults = table.concat({
     cfg.switch_wait_bars,
     cfg.skip_occupied_tracks and "1" or "0",
     cfg.auto_repeat and "1" or "0",
+    cfg.insert_after_current and "1" or "0",
 }, ",")
 
 local ok, input = reaper.GetUserInputs(
-    "Scenery - Settings", 9,
+    "Scenery - Settings", 10,
     "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,Record auto-loop (1/0):," ..
     "Record to end of bar (1/0):,Wait for scene end when launching (1/0):,Bars to wait before switching " ..
     "(ignored if waiting for scene end):,Skip occupied tracks when copying (1/0):," ..
-    "Auto repeat on scene start (1/0):,extrawidth=60",
+    "Auto repeat on scene start (1/0):,Insert copies after current scene (1/0):,extrawidth=60",
     defaults)
 if not ok then return end
 
 local bars, r, g, b, follow, record_auto_loop, record_end_of_bar, wait_for_scene_end, switch_wait_bars,
-skip_occupied_tracks, auto_repeat =
-    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
+skip_occupied_tracks, auto_repeat, insert_after_current =
+    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
 if not bars then
     reaper.MB("Could not parse the settings. Colour must be three numbers, e.g. 48,128,192.", "Scenery", 0)
     return
@@ -56,3 +57,4 @@ L.set_config("wait_for_scene_end", wait_for_scene_end:match("^%s*1%s*$") and "1"
 L.set_config("switch_wait_bars", switch_wait_bar_count)
 L.set_config("skip_occupied_tracks", skip_occupied_tracks:match("^%s*1%s*$") and "1" or "0")
 L.set_config("auto_repeat", auto_repeat:match("^%s*1%s*$") and "1" or "0")
+L.set_config("insert_after_current", insert_after_current:match("^%s*1%s*$") and "1" or "0")

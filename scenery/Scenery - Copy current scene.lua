@@ -1,3 +1,4 @@
+-- Creates a scene with item copies that share the source items' pooled IGUIDs.
 -- @noindex
 -- Scenery: Copy current scene
 -- Appends a scene with item copies that share the source items' pooled IGUIDs.

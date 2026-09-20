@@ -1,3 +1,4 @@
+-- Creates a scene of the configured length with fully independent item copies.
 -- @noindex
 -- Scenery: Clone current scene
 -- Appends a scene of the configured length with fully independent item copies.

@@ -30,6 +30,7 @@ function M.get_config()
         wait_for_scene_end  = ext_get("wait_for_scene_end", "0") == "1",
         switch_wait_bars    = math.max(0, math.floor(tonumber(ext_get("switch_wait_bars", "1")) or 1)),
         auto_repeat         = ext_get("auto_repeat", "1") == "1",
+        insert_after_current = ext_get("insert_after_current", "0") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
         poll_interval       = tonumber(ext_get("poll_interval", "0.008")) or 0.008,
     }
@@ -575,11 +576,63 @@ function M.create_scene(bars)
     return { pos = start, rgnend = stop, name = name, num = #scenes + 1 }
 end
 
--- Appends a new scene at the configured default bar length, tiling the
--- source content to fill it (or trimming it, if the default is shorter).
+-- Creates a scene at the configured default bar length, tiling the source
+-- content to fill it (or trimming it, if the default is shorter).
+local function shift_project_time(start, amount)
+    local markers = {}
+    local marker_index = 0
+    while true do
+        local retval, isrgn, pos, rgnend, name, id, color = reaper.EnumProjectMarkers3(0, marker_index)
+        if retval == 0 then break end
+        if pos >= start - 1e-9 then
+            markers[#markers + 1] = {
+                enum_idx = marker_index, isrgn = isrgn, pos = pos, rgnend = rgnend,
+                name = name, id = id, color = color,
+            }
+        end
+        marker_index = marker_index + 1
+    end
+
+    local items = {}
+    for track_index = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, track_index)
+        for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, item_index)
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            if pos >= start - 1e-9 then items[#items + 1] = item end
+        end
+    end
+
+    for _, marker in ipairs(markers) do
+        reaper.SetProjectMarkerByIndex2(0, marker.enum_idx, marker.isrgn,
+            marker.pos + amount, marker.isrgn and marker.rgnend + amount or 0,
+            marker.id, marker.name, marker.color, 0)
+    end
+    for _, item in ipairs(items) do
+        local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+        reaper.SetMediaItemInfo_Value(item, "D_POSITION", pos + amount)
+    end
+end
+
+local function create_scene_at(start, bars, scenes)
+    local stop = M.bars_to_time(start, bars)
+    local name = unique_scene_name(M.SCENE_PREFIX .. " " .. (#scenes + 1), scenes)
+    reaper.AddProjectMarker2(0, true, start, stop, name, -1, M.region_color(M.get_config()))
+    return { pos = start, rgnend = stop, name = name, num = #scenes + 1 }
+end
+
+function M.insert_scene_after(source, bars)
+    local scenes = M.scan_scenes()
+    local start = source.rgnend
+    local stop = M.bars_to_time(start, bars)
+    shift_project_time(start, stop - start)
+    return create_scene_at(start, bars, scenes)
+end
+
 function M.duplicate_scene(source, copy_fn)
-    local bars = M.get_config().default_bars
-    local scene = M.create_scene(bars)
+    local cfg = M.get_config()
+    local bars = cfg.default_bars
+    local scene = cfg.insert_after_current and M.insert_scene_after(source, bars) or M.create_scene(bars)
     local unit = source.rgnend - source.pos
     copy_fn = copy_fn or M.copy_items
     if unit <= 1e-9 then

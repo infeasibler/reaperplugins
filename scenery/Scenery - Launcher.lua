@@ -12,6 +12,7 @@
 --   [main] Scenery - Toggle link with next scene.lua
 --   [main] Scenery - Toggle record (quantized).lua
 --   [main] Scenery - Toggle auto repeat.lua
+--   [main] Scenery - Toggle insert after current scene.lua
 --   [main] Scenery - Engine (toggle).lua
 --   scenery_lib.lua
 -- @about
@@ -36,7 +37,7 @@
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
 local L = dofile(script_dir .. "scenery_lib.lua")
 
-local WINDOW = { title = "Scenery", w = 260, h = 500 }
+local WINDOW = { title = "Scenery", w = 260, h = 526 }
 local ROW = { h = 26, gap = 4 }
 local PAD = 8
 local DOUBLE_CLICK_SECONDS = 0.35
@@ -345,12 +346,17 @@ local function draw_settings(y, cfg)
     if button(PAD, y + (step + ROW.gap) * 8, w, step, auto_repeat_label) then
         L.set_config("auto_repeat", cfg.auto_repeat and "0" or "1")
     end
+
+    local insert_label = (cfg.insert_after_current and "[x] " or "[ ] ") .. "Insert copies after current scene"
+    if button(PAD, y + (step + ROW.gap) * 9, w, step, insert_label) then
+        L.set_config("insert_after_current", cfg.insert_after_current and "0" or "1")
+    end
 end
 
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, cfg)
     local w = gfx.w - PAD * 2
-    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 7 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
+    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 8 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end
