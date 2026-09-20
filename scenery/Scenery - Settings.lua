@@ -13,18 +13,23 @@ local defaults = table.concat({
     cfg.record_auto_loop and "1" or "0",
     cfg.record_end_of_bar and "1" or "0",
     cfg.wait_for_scene_end and "1" or "0",
+    cfg.switch_wait_bars,
     cfg.skip_occupied_tracks and "1" or "0",
+    cfg.auto_repeat and "1" or "0",
 }, ",")
 
 local ok, input = reaper.GetUserInputs(
-    "Scenery - Settings", 7,
+    "Scenery - Settings", 9,
     "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,Record auto-loop (1/0):," ..
-    "Record to end of bar (1/0):,Wait for scene end when launching (1/0):,Skip occupied tracks when copying (1/0):,extrawidth=60",
+    "Record to end of bar (1/0):,Wait for scene end when launching (1/0):,Bars to wait before switching " ..
+    "(ignored if waiting for scene end):,Skip occupied tracks when copying (1/0):," ..
+    "Auto repeat on scene start (1/0):,extrawidth=60",
     defaults)
 if not ok then return end
 
-local bars, r, g, b, follow, record_auto_loop, record_end_of_bar, wait_for_scene_end, skip_occupied_tracks =
-    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
+local bars, r, g, b, follow, record_auto_loop, record_end_of_bar, wait_for_scene_end, switch_wait_bars,
+skip_occupied_tracks, auto_repeat =
+    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
 if not bars then
     reaper.MB("Could not parse the settings. Colour must be three numbers, e.g. 48,128,192.", "Scenery", 0)
     return
@@ -36,6 +41,8 @@ if bar_count < 1 then
     return
 end
 
+local switch_wait_bar_count = math.max(0, math.floor(tonumber(switch_wait_bars) or 0))
+
 local function clamp_channel(v)
     return math.max(0, math.min(255, math.floor(tonumber(v) or 0)))
 end
@@ -46,4 +53,6 @@ L.set_config("follow_enabled", follow:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_auto_loop", record_auto_loop:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_end_of_bar", record_end_of_bar:match("^%s*1%s*$") and "1" or "0")
 L.set_config("wait_for_scene_end", wait_for_scene_end:match("^%s*1%s*$") and "1" or "0")
+L.set_config("switch_wait_bars", switch_wait_bar_count)
 L.set_config("skip_occupied_tracks", skip_occupied_tracks:match("^%s*1%s*$") and "1" or "0")
+L.set_config("auto_repeat", auto_repeat:match("^%s*1%s*$") and "1" or "0")

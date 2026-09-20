@@ -28,7 +28,8 @@ function M.get_config()
         record_auto_loop    = ext_get("record_auto_loop", "1") == "1",
         record_end_of_bar   = ext_get("record_end_of_bar", "1") == "1",
         wait_for_scene_end  = ext_get("wait_for_scene_end", "0") == "1",
-        skip_occupied_tracks = ext_get("skip_occupied_tracks", "1") == "1",
+        switch_wait_bars    = math.max(0, math.floor(tonumber(ext_get("switch_wait_bars", "1")) or 1)),
+        auto_repeat         = ext_get("auto_repeat", "1") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
         poll_interval       = tonumber(ext_get("poll_interval", "0.008")) or 0.008,
     }
@@ -261,20 +262,17 @@ function M.scene_at(time, scenes)
     return best
 end
 
--- Prefers the scene that was last explicitly selected. With cursor-follow off,
--- that selection stays active even after the edit cursor moves elsewhere.
+-- Prefers the scene that was last explicitly selected while the cursor is
+-- still inside it, since resolving purely by position is ambiguous whenever
+-- regions overlap. Falls back to plain position lookup once it has ended.
 function M.active_scene(scenes)
     scenes = scenes or M.scan_scenes()
     local cursor = M.cursor_position()
-    local follow_enabled = M.get_config().follow_enabled
     local active_id = tonumber(reaper.GetExtState(M.EXT_SECTION, "active_id"))
     if active_id then
         for _, s in ipairs(scenes) do
-            if s.id == active_id then
-                if not follow_enabled or (cursor >= s.pos and cursor < s.rgnend) then
-                    return s
-                end
-                break
+            if s.id == active_id and cursor >= s.pos and cursor < s.rgnend then
+                return s
             end
         end
     end
@@ -286,9 +284,7 @@ function M.active_scene(scenes)
             end
         end
     end
-    local scene = M.scene_at(cursor, scenes)
-    if not follow_enabled and scene then M.set_active_scene(scene) end
-    return scene
+    return M.scene_at(cursor, scenes)
 end
 
 -- -------------------------------------------------------------- transport
@@ -297,7 +293,7 @@ end
 -- off auto-follow until playback actually reaches this scene.
 function M.set_loop_to(scene, lock)
     reaper.GetSet_LoopTimeRange2(0, true, true, scene.pos, scene.rgnend, false)
-    reaper.GetSetRepeat(1)
+    reaper.GetSetRepeat(M.get_config().auto_repeat and 1 or 0)
     M.set_active_scene(scene)
     if lock ~= false then
         reaper.SetExtState(M.EXT_SECTION, "pending_start", tostring(scene.pos), false)
@@ -499,12 +495,54 @@ end
 function M.jump_to(scene, scenes)
     M.clear_waiting_scene()
     M.clear_next_scene()
-    local playing = M.is_playing()
     local start, stop = M.chain_bounds(scene, scenes)
-    if not playing then reaper.SetEditCurPos(scene.pos, false, true) end
-    M.set_loop_to({ pos = start, rgnend = stop }, true)
+    M.set_loop_to({ pos = start, rgnend = stop }, M.is_playing())
     M.set_active_scene(scene)
-    if playing then reaper.SetEditCurPos(scene.pos, false, true) end
+    reaper.SetEditCurPos(scene.pos, false, true)
+end
+
+-- Switches to a scene the same way the Launcher's single-click does (queues
+-- at the next bar/scene boundary if wait_for_scene_end is on and playing,
+-- after a fixed bar count if switch_wait_bars is set, or immediately
+-- otherwise), and starts the engine if it isn't already running so a queued
+-- switch actually fires. Shared by the Launcher and the standalone Go to
+-- next/previous scene actions so they behave identically.
+function M.switch_scene(scene, script_dir, scenes)
+    local cfg = M.get_config()
+    if cfg.wait_for_scene_end and M.is_playing() then
+        M.wait_for_scene(scene, scenes)
+    elseif cfg.switch_wait_bars > 0 and M.is_playing() then
+        M.wait_bars(scene, scenes, cfg.switch_wait_bars)
+    else
+        M.queue_scene(scene)
+    end
+    if not M.engine_running() then M.start_engine(script_dir) end
+end
+
+-- Alternative to wait_for_scene: instead of arming at the current scene's
+-- natural end, arms `bars` bars ahead of wherever playback is now. Reuses
+-- the same waiting-scene/arm_at polling in the Engine, just with a
+-- Alternative to wait_for_scene: instead of arming at the current scene's
+-- natural end, arms at the next bar boundary, counted from the active
+-- scene's own start, that lands on a multiple of `bars` (e.g. bars=4 fires
+-- on the scene's next 4-bar grid line - bar 8, 12, 16... - not simply 4 bars
+-- from now). bars=1 fires on every bar boundary, i.e. the next one. Reuses
+-- the same waiting-scene/arm_at polling in the Engine, just with a
+-- grid-aligned arm time instead of a scene-boundary one.
+function M.wait_bars(scene, scenes, bars)
+    if not M.is_playing() then
+        M.jump_to(scene, scenes)
+        return
+    end
+    scenes = scenes or M.scan_scenes()
+    M.set_next_scene(scene)
+    bars = math.max(1, math.floor(bars))
+    local current = M.active_scene(scenes)
+    local scene_start_measure = M.measure_at(current and current.pos or M.cursor_position())
+    local bar_in_scene = M.measure_at(M.cursor_position()) - scene_start_measure
+    local next_grid_bar = math.ceil((bar_in_scene + 1) / bars) * bars
+    local arm_at = M.measure_start_time(scene_start_measure + next_grid_bar)
+    M.set_waiting_scene(scene, scenes, arm_at)
 end
 
 function M.beats_until(target)
@@ -530,23 +568,6 @@ local function unique_scene_name(base, scenes)
     return base .. " - " .. n
 end
 
-local function tracks_with_items(start_pos, end_pos)
-    local occupied = {}
-    for t = 0, reaper.CountTracks(0) - 1 do
-        local track = reaper.GetTrack(0, t)
-        for k = 0, reaper.CountTrackMediaItems(track) - 1 do
-            local item = reaper.GetTrackMediaItem(track, k)
-            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-            local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-            if pos < end_pos - 1e-9 and item_end > start_pos + 1e-9 then
-                occupied[t] = true
-                break
-            end
-        end
-    end
-    return occupied
-end
-
 function M.create_scene(bars)
     local cfg = M.get_config()
     local scenes = M.scan_scenes()
@@ -560,21 +581,18 @@ end
 -- Appends a new scene at the configured default bar length, tiling the
 -- source content to fill it (or trimming it, if the default is shorter).
 function M.duplicate_scene(source, copy_fn)
-    local cfg = M.get_config()
-    local bars = cfg.default_bars
+    local bars = M.get_config().default_bars
     local scene = M.create_scene(bars)
-    local occupied_tracks = cfg.skip_occupied_tracks
-        and tracks_with_items(scene.pos, scene.rgnend) or nil
     local unit = source.rgnend - source.pos
     copy_fn = copy_fn or M.copy_items
     if unit <= 1e-9 then
-        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend, occupied_tracks)
+        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend)
         return scene
     end
     local dest = scene.pos
     while dest < scene.rgnend - 1e-9 do
         local tile_end = math.min(dest + unit, scene.rgnend)
-        copy_fn(source.pos, source.rgnend, dest, tile_end, occupied_tracks)
+        copy_fn(source.pos, source.rgnend, dest, tile_end)
         dest = dest + unit
     end
     return scene
@@ -734,40 +752,38 @@ end
 
 -- Copies every item starting within [src_start, src_end) to the same track,
 -- offset to dest_start and clamped so nothing overruns dest_end.
-local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, link_pool, occupied_tracks)
+local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, link_pool)
     local offset = dest_start - src_start
     local copied = 0
     for t = 0, reaper.CountTracks(0) - 1 do
-        if not occupied_tracks or not occupied_tracks[t] then
-            local track = reaper.GetTrack(0, t)
-            local sources = {}
-            for k = 0, reaper.CountTrackMediaItems(track) - 1 do
-                local item = reaper.GetTrackMediaItem(track, k)
-                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-                if pos >= src_start - 1e-9 and pos < src_end - 1e-9 then
-                    sources[#sources + 1] = item
-                end
+        local track = reaper.GetTrack(0, t)
+        local sources = {}
+        for k = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, k)
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            if pos >= src_start - 1e-9 and pos < src_end - 1e-9 then
+                sources[#sources + 1] = item
             end
-            for _, item in ipairs(sources) do
-                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + offset
-                -- an item whose offset position already lands at/past dest_end has nothing
-                -- to keep - SplitMediaItem can't split before an item's own start, so it
-                -- would otherwise be copied in full and left overhanging unclamped
-                if pos < dest_end - 1e-9 then
-                    local chunk = source_chunk(item, link_pool)
-                    if chunk then
-                        local new_item = reaper.AddMediaItemToTrack(track)
-                        reaper.SetItemStateChunk(new_item, chunk, false)
-                        local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-                        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", pos)
-                        if pos + len > dest_end + 1e-9 then
-                            -- split rather than shrink D_LENGTH: for MIDI takes the source's own
-                            -- PPQ extents don't follow D_LENGTH, so notes past dest_end would still show
-                            local right = reaper.SplitMediaItem(new_item, dest_end)
-                            if right then reaper.DeleteTrackMediaItem(track, right) end
-                        end
-                        copied = copied + 1
+        end
+        for _, item in ipairs(sources) do
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + offset
+            -- an item whose offset position already lands at/past dest_end has nothing
+            -- to keep - SplitMediaItem can't split before an item's own start, so it
+            -- would otherwise be copied in full and left overhanging unclamped
+            if pos < dest_end - 1e-9 then
+                local chunk = source_chunk(item, link_pool)
+                if chunk then
+                    local new_item = reaper.AddMediaItemToTrack(track)
+                    reaper.SetItemStateChunk(new_item, chunk, false)
+                    local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                    reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", pos)
+                    if pos + len > dest_end + 1e-9 then
+                        -- split rather than shrink D_LENGTH: for MIDI takes the source's own
+                        -- PPQ extents don't follow D_LENGTH, so notes past dest_end would still show
+                        local right = reaper.SplitMediaItem(new_item, dest_end)
+                        if right then reaper.DeleteTrackMediaItem(track, right) end
                     end
+                    copied = copied + 1
                 end
             end
         end
@@ -775,12 +791,12 @@ local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, li
     return copied
 end
 
-function M.copy_items(src_start, src_end, dest_start, dest_end, occupied_tracks)
-    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, false, occupied_tracks)
+function M.copy_items(src_start, src_end, dest_start, dest_end)
+    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, false)
 end
 
-function M.copy_items_linked(src_start, src_end, dest_start, dest_end, occupied_tracks)
-    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, true, occupied_tracks)
+function M.copy_items_linked(src_start, src_end, dest_start, dest_end)
+    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, true)
 end
 
 -- ------------------------------------------------------------------ misc

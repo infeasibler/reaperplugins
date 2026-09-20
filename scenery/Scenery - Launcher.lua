@@ -11,6 +11,7 @@
 --   [main] Scenery - Settings.lua
 --   [main] Scenery - Toggle link with next scene.lua
 --   [main] Scenery - Toggle record (quantized).lua
+--   [main] Scenery - Toggle auto repeat.lua
 --   [main] Scenery - Engine (toggle).lua
 --   scenery_lib.lua
 -- @about
@@ -83,10 +84,10 @@ local function panel(x, y, w, h, color, hovered)
     gfx.rect(x, y, w, h, 1)
 end
 
-local function button(x, y, w, h, label, color)
-    local hovered = hit(x, y, w, h)
+local function button(x, y, w, h, label, color, disabled)
+    local hovered = not disabled and hit(x, y, w, h)
     panel(x, y, w, h, color or COLOR.button, hovered)
-    draw_label(label, x, y, w, h)
+    draw_label(label, x, y, w, h, disabled and COLOR.dim or nil)
     return hovered and mouse.lclick
 end
 
@@ -114,13 +115,7 @@ local function duplicate_scene(source, copy_fn, description)
 end
 
 local function switch_scene(scene)
-    local cfg = L.get_config()
-    if cfg.wait_for_scene_end and L.is_playing() then
-        L.wait_for_scene(scene)
-    else
-        L.queue_scene(scene)
-    end
-    if not L.engine_running() then L.start_engine(script_dir) end
+    L.switch_scene(scene, script_dir)
 end
 
 local function record_button_state()
@@ -326,12 +321,36 @@ local function draw_settings(y, cfg)
     if button(PAD, y + (step + ROW.gap) * 6, w, step, wait_label) then
         L.set_config("wait_for_scene_end", cfg.wait_for_scene_end and "0" or "1")
     end
+
+    -- only meaningful when not already waiting for the scene to end, so greyed out then
+    local wait_bars_disabled = cfg.wait_for_scene_end
+    local wait_bars_y = y + (step + ROW.gap) * 7
+    draw_label("Bars to wait before switching", PAD, wait_bars_y, w - 84, step, COLOR.dim)
+    if button(gfx.w - PAD - 78, wait_bars_y, 22, step, "-", nil, wait_bars_disabled)
+        and cfg.switch_wait_bars > 0 then
+        L.set_config("switch_wait_bars", cfg.switch_wait_bars - 1)
+    end
+    if button(gfx.w - PAD - 54, wait_bars_y, 30, step, tostring(cfg.switch_wait_bars), nil, wait_bars_disabled) then
+        local ok, input = reaper.GetUserInputs("Bars to wait before switching", 1, "Bars:",
+            tostring(cfg.switch_wait_bars))
+        if ok then
+            L.set_config("switch_wait_bars", math.max(0, math.floor(tonumber(input) or cfg.switch_wait_bars)))
+        end
+    end
+    if button(gfx.w - PAD - 22, wait_bars_y, 22, step, "+", nil, wait_bars_disabled) then
+        L.set_config("switch_wait_bars", cfg.switch_wait_bars + 1)
+    end
+
+    local auto_repeat_label = (cfg.auto_repeat and "[x] " or "[ ] ") .. "Auto repeat on scene start"
+    if button(PAD, y + (step + ROW.gap) * 8, w, step, auto_repeat_label) then
+        L.set_config("auto_repeat", cfg.auto_repeat and "0" or "1")
+    end
 end
 
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, cfg)
     local w = gfx.w - PAD * 2
-    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 5 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
+    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 7 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end
