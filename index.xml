@@ -7,7 +7,9 @@
 				<link rel="website">https://github.com/infeasibler/reaperplugins</link>
 			</metadata>
 			<version name="0.3.0" author="infeasibler" time="2026-09-20T00:00:00Z">
-				<changelog><![CDATA[Initial Scenery release.]]></changelog>
+				<changelog><![CDATA[- Added configurable auto-repeat for scene starts and switches, including a Launcher checkbox and Toggle auto repeat action.
+- Phrase-based scene switching now uses absolute project bar groups; values 0 and 1 switch immediately, while larger values wait for the next phrase boundary.
+- Launcher and standalone next/previous actions now share the same switching behavior, including smooth-seek alignment.]]></changelog>
 				<source main="main" type="script" file="Scenery - Launcher.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Launcher.lua</source>
 				<source main="main" type="script" file="Scenery - New scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene.lua</source>
 				<source main="main" type="script" file="Scenery - New scene (custom bars).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene%20(custom%20bars).lua</source>

@@ -1,6 +1,6 @@
 # Scenery
 
-Scene-based looping for REAPER. A "scene" is any project region — name it whatever you like (create/rename regions directly on the timeline or in the Region Manager). Creating a scene via Scenery appends a new region after the last one, named `Scene N` where `N` is simply the current region count + 1; it sets the loop points to it and enables repeat, so you can build an arrangement one loop at a time without touching the timeline by hand.
+Scene-based looping for REAPER. A "scene" is any project region — name it whatever you like (create/rename regions directly on the timeline or in the Region Manager). Creating a scene via Scenery appends a new region after the last one, named `Scene N` where `N` is simply the current region count + 1; it sets the loop points to it and applies the auto-repeat setting (enabled by default), so you can build an arrangement one loop at a time without touching the timeline by hand.
 
 ## Install
 
@@ -20,13 +20,15 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 | `Scenery - Copy current scene` | Appends a scene of the configured length with linked item copies. Editing pooled MIDI/audio content in either scene affects the other. |
 | `Scenery - Go to next scene` / `Scenery - Go to previous scene` | Moves the loop to the neighbouring scene. |
 | `Scenery - Toggle link with next scene` | Links or unlinks the active scene with its immediate successor, so the engine can loop the linked scenes as one range. |
+| `Scenery - Toggle auto repeat` | Enables or disables forcing REAPER's transport repeat on when a scene starts or switches. |
 | `Scenery - Toggle record (quantized)` | Starts/stops recording immediately, same as REAPER's native Record command, but also makes sure the engine is running so new items get bar-aligned afterwards. Handy as a bindable equivalent to the launcher's `Rec` button. |
-| `Scenery - Settings` | Default scene length, region colour, auto-follow on/off, record auto-loop on/off, record-to-end-of-bar on/off, waiting for the current scene to end when launching, and whether Clone/Copy skip tracks already containing media in the destination scene. The launcher settings also include destructive-action confirmation and REAPER's Smooth seek preference. |
+| `Scenery - Settings` | Default scene length, region colour, auto-follow on/off, record auto-loop on/off, record-to-end-of-bar on/off, auto-repeat on/off, waiting for the current scene to end when launching, phrase wait length, and whether Clone/Copy skip tracks already containing media in the destination scene. The launcher settings also include destructive-action confirmation and REAPER's Smooth seek preference. |
 | `Scenery - Engine (toggle)` | Background service that keeps the loop on the scene, or its linked chain, under the cursor and handles recording post-processing. Run again to stop. The launcher and standalone recording action start it automatically when needed. |
 
 ## Behaviour notes
 
 - Scene lengths follow the project tempo and time-signature map, so 8 bars stays 8 bars across meter changes.
+- Auto-repeat is enabled by default: starting or switching to a scene forces REAPER's transport repeat on. Disable it in Settings, the Launcher, or with `Scenery - Toggle auto repeat` when scene changes should not force looping.
 - Switching scenes from the launcher moves the loop points and seeks immediately by default; enable "Wait for scene end when launching" to defer single-click launches until the current linked scene chain ends. Double-clicking always switches immediately. When scene-end waiting is off, "Bars to wait before switching" uses human 1-based counting: 0 and 1 switch immediately, while values 2 and above wait for the end of the current phrase of that length. For example, 4-bar phrases are bars 1-4, 5-8, 9-12, and so on. "Smooth seek" in the launcher's Settings can additionally quantize the audible transition to the next bar/measure.
 - When "Loop follows cursor" is off, moving the edit cursor into another scene does not change the active scene; launching a scene from the Launcher still changes it explicitly.
 - Creating a scene never moves the play cursor. If the transport is rolling, playback continues and wraps into the new loop when it reaches it — the engine holds off auto-follow until then.
