@@ -503,15 +503,17 @@ end
 
 -- Switches to a scene the same way the Launcher's single-click does (queues
 -- at the next bar/scene boundary if wait_for_scene_end is on and playing,
--- after a fixed bar count if switch_wait_bars is set, or immediately
--- otherwise), and starts the engine if it isn't already running so a queued
--- switch actually fires. Shared by the Launcher and the standalone Go to
--- next/previous scene actions so they behave identically.
+-- after the current fixed-length phrase if switch_wait_bars is greater than
+-- one, or immediately otherwise), and starts the engine if it isn't already
+-- running so a queued switch actually fires. Values 0 and 1 therefore both
+-- mean immediate switching; values 2+ wait for the next phrase boundary.
+-- Shared by the Launcher and the standalone Go to next/previous scene actions
+-- so they behave identically.
 function M.switch_scene(scene, script_dir, scenes)
     local cfg = M.get_config()
     if cfg.wait_for_scene_end and M.is_playing() then
         M.wait_for_scene(scene, scenes)
-    elseif cfg.switch_wait_bars > 0 and M.is_playing() then
+    elseif cfg.switch_wait_bars > 1 and M.is_playing() then
         M.wait_bars(scene, scenes, cfg.switch_wait_bars)
     else
         M.queue_scene(scene)
@@ -519,10 +521,10 @@ function M.switch_scene(scene, script_dir, scenes)
     if not M.engine_running() then M.start_engine(script_dir) end
 end
 
--- Alternative to wait_for_scene: instead of arming at the current scene's
--- natural end, arms `bars` bars ahead of wherever playback is now. Reuses
--- the same waiting-scene/arm_at polling in the Engine, just with a
--- fixed-offset arm time instead of a scene-boundary one.
+-- Alternative to wait_for_scene: arms at the end of the current `bars`-bar
+-- phrase. Phrases are aligned to the project start, so a value of 4 groups
+-- bars 1-4, 5-8, 9-12, and so on. Reuses the same waiting-scene/arm_at
+-- polling in the Engine.
 function M.wait_bars(scene, scenes, bars)
     if not M.is_playing() then
         M.jump_to(scene, scenes)
@@ -530,7 +532,13 @@ function M.wait_bars(scene, scenes, bars)
     end
     scenes = scenes or M.scan_scenes()
     M.set_next_scene(scene)
-    local arm_at = M.bars_to_time(M.cursor_position(), bars)
+    local current_measure = M.measure_at(M.cursor_position())
+    local phrase_end_measure = (math.floor(current_measure / bars) + 1) * bars
+    local arm_measure = phrase_end_measure
+    if M.get_smooth_seek() then
+        arm_measure = arm_measure - 1
+    end
+    local arm_at = M.measure_start_time(arm_measure)
     M.set_waiting_scene(scene, scenes, arm_at)
 end
 
