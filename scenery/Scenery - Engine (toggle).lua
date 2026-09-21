@@ -45,10 +45,11 @@ local function service_recording()
         recording_snapshot = L.snapshot_item_guids()
         recording_scene = L.active_scene()
     elseif not recording and was_recording then
-        if recording_snapshot and recording_scene then
+        local target_scene = L.active_scene() or recording_scene
+        if recording_snapshot and target_scene then
             reaper.PreventUIRefresh(1)
             reaper.Undo_BeginBlock2(0)
-            local processed = L.apply_loop_source_to_new_items(recording_snapshot, recording_scene)
+            local processed = L.apply_loop_source_to_new_items(recording_snapshot, target_scene)
             reaper.Undo_EndBlock2(0, "Scenery: Record auto-loop (" .. processed .. " items)", -1)
             reaper.PreventUIRefresh(-1)
             if processed > 0 then reaper.UpdateArrange() end
