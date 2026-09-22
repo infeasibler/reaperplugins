@@ -6,7 +6,7 @@
 				<description><![CDATA[Scene-based looping toolkit for REAPER with a launcher panel, scene actions, a follow-along engine, and bar-quantized recording.]]></description>
 				<link rel="website">https://github.com/infeasibler/reaperplugins</link>
 			</metadata>
-			<version name="0.3.1" author="infeasibler" time="2026-09-20T00:00:00Z">
+			<version name="0.3.2" author="infeasibler" time="2026-09-20T00:00:00Z">
 				<changelog><![CDATA[- Added configurable auto-repeat for scene starts and switches, including a Launcher checkbox and Toggle auto repeat action.
 - Added configurable insertion of Clone/Copy results after the current scene, including a Launcher checkbox and Toggle insert after current scene action.
 - Phrase-based scene switching now uses absolute project bar groups; values 0 and 1 switch immediately, while larger values wait for the next phrase boundary.
