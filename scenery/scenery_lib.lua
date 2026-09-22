@@ -689,9 +689,10 @@ end
 -- Recording starts immediately (not bar-aligned), so the new item is physically
 -- split/trimmed to one bar (MIDI_SetItemExtents for MIDI takes, since resizing
 -- D_LENGTH alone doesn't update a MIDI take's own PPQ-based extents), then that
--- one-bar unit is physically duplicated across the rest of the scene - B_LOOPSRC
--- isn't used since its repeat unit also follows the take's own extents, not D_LENGTH.
-local cloned_chunk
+-- one-bar unit is physically duplicated across the rest of the scene as linked
+-- pooled copies - B_LOOPSRC isn't used since its repeat unit also follows the
+-- take's own extents, not D_LENGTH.
+local linked_chunk
 
 function M.apply_loop_source_to_new_items(existing_guids, scene)
     if not existing_guids or not scene then return 0 end
@@ -773,7 +774,7 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
             local unit = snapped_end - snapped_pos
             local dest = snapped_end
             while dest < scene.rgnend - 1e-9 do
-                local chunk = cloned_chunk(item)
+                local chunk = linked_chunk(item)
                 if not chunk then break end
                 local tile = reaper.AddMediaItemToTrack(track)
                 reaper.SetItemStateChunk(tile, chunk, false)
@@ -796,8 +797,8 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
     return processed
 end
 
-cloned_chunk = function(item)
-    return source_chunk(item, false)
+linked_chunk = function(item)
+    return source_chunk(item, true)
 end
 
 -- Copies every item starting within [src_start, src_end) to the same track,
