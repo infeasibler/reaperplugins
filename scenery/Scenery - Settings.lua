@@ -24,7 +24,7 @@ local defaults = table.concat({
 local ok, input = reaper.GetUserInputs(
     "Scenery - Settings", 12,
     "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,Record auto-loop (1/0):," ..
-    "Record lead-in (1/0):,Record lead-out (1/0):,Record to end of bar (1/0):,Wait for scene end when launching (1/0):,Phrase length (bars; ignored " ..
+    "Record lead-in (1/0):,Record lead-out (1/0):,Record to end of phrase (1/0):,Wait for scene end when launching (1/0):,Phrase length (bars; ignored " ..
     "if waiting for scene end):,Skip occupied tracks when copying (1/0):," ..
     "Auto repeat on scene start (1/0):,Insert copies after current scene (1/0):,extrawidth=60",
     defaults)

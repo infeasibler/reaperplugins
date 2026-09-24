@@ -89,6 +89,11 @@ function M.bars_between(start_time, end_time)
     return M.measure_at(end_time) - M.measure_at(start_time)
 end
 
+local function next_phrase_end_measure(current_measure, bars)
+    bars = math.max(1, math.floor(tonumber(bars) or 1))
+    return (math.floor(current_measure / bars) + 1) * bars
+end
+
 -- ----------------------------------------------------------- scene model
 
 -- Every region is treated as a scene, whatever it's named - the user can
@@ -443,14 +448,14 @@ end
 
 -- Shared by the launcher's Rec button and the standalone action. Starting is
 -- immediate (native Record command/button can't be intercepted for a
--- quantized start). Stopping, when record-to-end-of-bar is on, is deferred to
--- the engine so nothing recorded in the current bar is lost - see
+-- quantized start). Stopping, when record-to-end-of-phrase is on, is deferred
+-- to the engine so nothing recorded in the current phrase is lost - see
 -- request_quantized_stop/due_record_stop. This is independent of auto-loop,
 -- which only controls whether finished recordings get bar-aligned/looped.
 function M.toggle_record(cfg, script_dir)
     if M.is_recording() then
         if cfg.record_end_of_bar and M.engine_running() then
-            M.request_quantized_stop()
+            M.request_quantized_stop(cfg.switch_wait_bars)
         else
             reaper.Main_OnCommand(1013, 0)
         end
@@ -462,11 +467,12 @@ function M.toggle_record(cfg, script_dir)
     reaper.Main_OnCommand(1013, 0)
 end
 
--- Requests that recording keep running until just past the end of the
--- current bar, instead of cutting off immediately, so nothing is missed;
--- the engine's poll loop watches for this and issues the real stop.
-function M.request_quantized_stop()
-    local target = M.bars_to_time(M.cursor_position(), 1) + 0.02
+-- Requests that recording keep running until just past the end of the current
+-- project-aligned phrase; the engine's poll loop watches for this and stops.
+function M.request_quantized_stop(phrase_bars)
+    local measure = M.measure_at(M.cursor_position())
+    local phrase_end = M.measure_start_time(next_phrase_end_measure(measure, phrase_bars))
+    local target = phrase_end + 0.02
     reaper.SetExtState(M.EXT_SECTION, "pending_record_stop", tostring(target), false)
 end
 
@@ -536,7 +542,7 @@ function M.wait_bars(scene, scenes, bars)
     scenes = scenes or M.scan_scenes()
     M.set_next_scene(scene)
     local current_measure = M.measure_at(M.cursor_position())
-    local phrase_end_measure = (math.floor(current_measure / bars) + 1) * bars
+    local phrase_end_measure = next_phrase_end_measure(current_measure, bars)
     local arm_measure = phrase_end_measure
     if M.get_smooth_seek() then
         arm_measure = arm_measure - 1
@@ -693,6 +699,45 @@ end
 -- unit follows the take's own extents, not D_LENGTH.
 local linked_chunk
 
+local function glue_midi_phrase_items(items)
+    if #items < 2 then return end
+
+    local selected_before, item_lookup = {}, {}
+    for i = 0, reaper.CountMediaItems(0) - 1 do
+        local item = reaper.GetMediaItem(0, i)
+        if reaper.IsMediaItemSelected(item) then selected_before[item] = true end
+    end
+
+    local was_selected = false
+    reaper.SelectAllMediaItems(0, false)
+    for _, item in ipairs(items) do
+        item_lookup[item] = true
+        was_selected = was_selected or selected_before[item] == true
+        reaper.SetMediaItemSelected(item, true)
+    end
+    reaper.Main_OnCommand(40362, 0)
+
+    local outputs = {}
+    for i = 0, reaper.CountSelectedMediaItems(0) - 1 do
+        local item = reaper.GetSelectedMediaItem(0, i)
+        if not item_lookup[item] then outputs[#outputs + 1] = item end
+    end
+
+    reaper.SelectAllMediaItems(0, false)
+    for item in pairs(selected_before) do
+        if reaper.ValidatePtr2(0, item, "MediaItem*") then
+            reaper.SetMediaItemSelected(item, true)
+        end
+    end
+    if was_selected then
+        for _, output in ipairs(outputs) do
+            if reaper.ValidatePtr2(0, output, "MediaItem*") then
+                reaper.SetMediaItemSelected(output, true)
+            end
+        end
+    end
+end
+
 local function phrase_start_for_recording(pos, scene, phrase_bars)
     if pos <= scene.pos + 1e-9 then return scene.pos end
 
@@ -730,7 +775,8 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     local desired_end = phrase_end
     if cfg.record_lead_out then desired_end = math.max(recorded_end, phrase_end) end
     local take = reaper.GetActiveTake(item)
-    if take and reaper.TakeIsMIDI(take) then
+    local is_midi = take and reaper.TakeIsMIDI(take)
+    if is_midi then
         local start_qn = reaper.TimeMap2_timeToQN(0, pos)
         local end_qn = reaper.TimeMap2_timeToQN(0, desired_end)
         reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
@@ -743,11 +789,13 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     local lead_in = cfg.record_lead_in and math.max(0, phrase_start - pos) or 0
     local unit = phrase_end - phrase_start
     local dest_anchor = phrase_end
+    local phrase_items = { item }
     while dest_anchor < scene.rgnend - 1e-9 do
         local chunk = linked_chunk(item)
         if not chunk then break end
         local tile = reaper.AddMediaItemToTrack(track)
         reaper.SetItemStateChunk(tile, chunk, false)
+        phrase_items[#phrase_items + 1] = tile
         local tile_pos = dest_anchor - lead_in
         reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_pos)
         if not cfg.record_lead_out and tile_pos + reaper.GetMediaItemInfo_Value(tile, "D_LENGTH")
@@ -756,6 +804,9 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
             if right then reaper.DeleteTrackMediaItem(track, right) end
         end
         dest_anchor = dest_anchor + unit
+    end
+    if cfg.record_lead_out and is_midi then
+        glue_midi_phrase_items(phrase_items)
     end
     return true
 end

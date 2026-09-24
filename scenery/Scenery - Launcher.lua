@@ -315,7 +315,7 @@ local function draw_settings(y, cfg)
         L.set_config("record_auto_loop", cfg.record_auto_loop and "0" or "1")
     end
 
-    local end_of_bar_label = (cfg.record_end_of_bar and "[x] " or "[ ] ") .. "Record to end of bar"
+    local end_of_bar_label = (cfg.record_end_of_bar and "[x] " or "[ ] ") .. "Record to end of phrase"
     if button(PAD, y + (step + ROW.gap) * 5, w, step, end_of_bar_label) then
         L.set_config("record_end_of_bar", cfg.record_end_of_bar and "0" or "1")
     end

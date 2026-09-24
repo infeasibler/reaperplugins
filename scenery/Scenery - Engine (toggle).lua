@@ -28,9 +28,8 @@ local recording_scene = nil
 local last_play_pos = nil
 local next_poll = 0
 
--- Recording starts and stops immediately (native Record button, launcher Rec
--- button, and the standalone action all behave the same); bar-alignment is
--- applied purely in post-processing by apply_loop_source_to_new_items.
+-- Recording starts immediately; requested stops are deferred to the configured
+-- phrase boundary by follow(). Auto-loop alignment is applied in post-processing.
 local function service_recording()
     local recording = L.is_recording()
     local cfg = L.get_config()
@@ -63,8 +62,8 @@ end
 local function follow()
     local cfg = L.get_config()
 
-    -- honour a quantized-stop request before checking for a stopped recording,
-    -- so nothing recorded through the end of the bar is lost
+    -- Honour a quantized-stop request before checking for a stopped recording,
+    -- so nothing recorded through the end of the phrase is lost.
     local play_pos = L.is_playing() and reaper.GetPlayPosition() or nil
     if play_pos and L.due_record_stop(play_pos, last_play_pos) then
         reaper.Main_OnCommand(1013, 0)
