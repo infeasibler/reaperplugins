@@ -467,12 +467,12 @@ function M.toggle_record(cfg, script_dir)
     reaper.Main_OnCommand(1013, 0)
 end
 
--- Requests that recording keep running until just past the end of the current
--- project-aligned phrase; the engine's poll loop watches for this and stops.
+-- Requests that recording continue one bar beyond the current project-aligned
+-- phrase; the engine's poll loop watches for this and stops.
 function M.request_quantized_stop(phrase_bars)
     local measure = M.measure_at(M.cursor_position())
-    local phrase_end = M.measure_start_time(next_phrase_end_measure(measure, phrase_bars))
-    local target = phrase_end + 0.02
+    local phrase_end_measure = next_phrase_end_measure(measure, phrase_bars)
+    local target = M.measure_start_time(phrase_end_measure + 1) + 0.02
     reaper.SetExtState(M.EXT_SECTION, "pending_record_stop", tostring(target), false)
 end
 
@@ -699,6 +699,21 @@ end
 -- unit follows the take's own extents, not D_LENGTH.
 local linked_chunk
 
+local function remove_midi_notes_starting_at_or_after(take, end_time)
+    local _, note_count = reaper.MIDI_CountEvts(take)
+    local note_indices = {}
+    for index = 0, note_count - 1 do
+        local ok, _, _, start_ppq = reaper.MIDI_GetNote(take, index)
+        if ok and reaper.MIDI_GetProjTimeFromPPQPos(take, start_ppq) >= end_time - 1e-9 then
+            note_indices[#note_indices + 1] = index
+        end
+    end
+    for index = #note_indices, 1, -1 do
+        reaper.MIDI_DeleteNote(take, note_indices[index])
+    end
+    if #note_indices > 0 then reaper.MIDI_Sort(take) end
+end
+
 local function glue_midi_phrase_items(items)
     if #items < 2 then return end
 
@@ -777,6 +792,9 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     local take = reaper.GetActiveTake(item)
     local is_midi = take and reaper.TakeIsMIDI(take)
     if is_midi then
+        if cfg.record_lead_out then
+            remove_midi_notes_starting_at_or_after(take, phrase_end)
+        end
         local start_qn = reaper.TimeMap2_timeToQN(0, pos)
         local end_qn = reaper.TimeMap2_timeToQN(0, desired_end)
         reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
