@@ -23,7 +23,7 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 | `Scenery - Toggle auto repeat` | Enables or disables forcing REAPER's transport repeat on when a scene starts or switches. |
 | `Scenery - Toggle record lead-in` / `Scenery - Toggle record lead-out` | Preserve material before or after the phrase-aligned loop source when auto-looping new recordings. |
 | `Scenery - Toggle insert after current scene` | Enables or disables inserting Clone/Copy results immediately after the source scene instead of appending them at the end. |
-| `Scenery - Settings` | Default scene length, region colour, auto-follow on/off, record auto-loop on/off, lead-in/out on/off, record-to-end-of-bar on/off, auto-repeat on/off, insert-after-current on/off, waiting for the current scene to end when launching, phrase wait length, and whether Clone/Copy skip tracks already containing media in the destination scene. The launcher settings also include destructive-action confirmation and REAPER's Smooth seek preference. |
+| `Scenery - Settings` | Default scene length, region colour, auto-follow on/off, record auto-loop on/off, lead-in/out on/off, record-to-end-of-phrase on/off, auto-repeat on/off, insert-after-current on/off, waiting for the current scene to end when launching, phrase wait length, and an exposed Clone/Copy option to skip occupied destination tracks (not currently implemented; see [issue #1](https://github.com/infeasibler/reaperplugins/issues/1)). The launcher settings also include destructive-action confirmation and REAPER's Smooth seek preference. |
 | `Scenery - Toggle record (quantized)` | Starts/stops recording immediately, same as REAPER's native Record command, but also makes sure the engine is running so new items get bar-aligned afterwards. Handy as a bindable equivalent to the launcher's `Rec` button. |
 | `Scenery - Engine (toggle)` | Background service that keeps the loop on the scene, or its linked chain, under the cursor and handles recording post-processing. Run again to stop. The launcher and standalone recording action start it automatically when needed. |
 
@@ -42,9 +42,8 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 - When the engine is running and record auto-loop is enabled, each recording pass snapshots existing item GUIDs. New items recorded inside the active scene are moved to the containing bar, then linked pooled copies are created through the scene so editing one repeated bar changes them all.
 - Record lead-in and lead-out are off by default and only affect recordings when auto-loop is enabled. They preserve recorded material before or after the phrase-length loop unit; each repeated item is positioned so its phrase anchor remains aligned. Overlapping MIDI items play together, while audio overlap follows REAPER's configured Item mix behavior (mix, replace, or crossfade).
 - With record auto-loop enabled and the engine running, the launcher's `Rec` button, the `Toggle record (quantized)` action, and REAPER's native Record button/shortcut all start and stop recording immediately. With lead-in/out disabled, the recorded item is bar-aligned and linked pooled copies fill the rest of the scene. When either lead option is enabled, a pre-scene pickup anchors at the scene start; otherwise the source anchors at the next configured phrase boundary and repeats at that phrase length. The launcher and standalone action start the engine automatically; native Record requires the engine to already be running for this processing.
-- "Record to end of bar" (on by default) is independent of auto-loop: when stopping a recording, it delays the actual stop until just past the end of the current bar so nothing is lost, even if auto-loop is off. The launcher and standalone recording action start the engine automatically when this setting requires it, since the engine polls for the deferred stop point.
+- "Record to end of phrase" (on by default) is independent of auto-loop: when stopping a recording, it delays the actual stop until just past the next project-aligned phrase boundary, using the configured phrase length (treated as at least one bar), so nothing is lost even if auto-loop is off. The launcher and standalone recording action start the engine automatically when this setting requires it, since the engine polls for the deferred stop point.
 - Every scene action is a single undo step.
-- Clone and Copy skip a track when the destination scene already contains overlapping media on that track. This is enabled by default and can be changed in Settings.
 
 ## Current limitations
 
@@ -53,7 +52,8 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 - Items that start *before* a scene but overlap into it are not duplicated.
 - New scenes are always appended after the last one; there is no insert-between action, and deleting a scene leaves its gap on the timeline.
 - Only the last scene can have its length changed.
+- Settings currently exposes "Skip occupied tracks when copying," but Clone and Copy do not yet honor it; see [issue #1](https://github.com/infeasibler/reaperplugins/issues/1).
 
 ## Planned
 
-- **Bar-quantized record start** — optionally start recording on the next bar line. Stopping at the end of the current bar is already supported by "Record to end of bar".
+- **Bar-quantized record start** — optionally start recording on the next bar line. Stopping at the configured phrase boundary is already supported by "Record to end of phrase".
