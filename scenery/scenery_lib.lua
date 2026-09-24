@@ -770,6 +770,14 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     local phrase_bars = math.max(1, cfg.switch_wait_bars)
     local phrase_start = phrase_start_for_recording(pos, scene, phrase_bars)
     local phrase_end = M.bars_to_time(phrase_start, phrase_bars)
+    if cfg.record_end_of_bar then
+        local capture_end = M.snap_to_bar(recorded_end, "next", 0.2)
+        local loop_end_measure = M.measure_at(capture_end) - 1
+        local captured_phrase_end = M.measure_start_time(loop_end_measure)
+        if captured_phrase_end > phrase_end + 1e-9 then
+            phrase_end = captured_phrase_end
+        end
+    end
     if phrase_end <= phrase_start + 1e-9 then return false end
 
     if not cfg.record_lead_in and pos < phrase_start - 1e-9 then
@@ -787,10 +795,20 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         recorded_end = math.min(recorded_end, phrase_end)
     end
 
-    local desired_end = phrase_end
-    if cfg.record_lead_out then desired_end = math.max(recorded_end, phrase_end) end
     local take = reaper.GetActiveTake(item)
     local is_midi = take and reaper.TakeIsMIDI(take)
+    local desired_end = phrase_end
+    local audio_crossfade = 0
+    if cfg.record_lead_out then
+        if is_midi then
+            desired_end = math.max(recorded_end, phrase_end)
+        else
+            local phrase_end_qn = reaper.TimeMap2_timeToQN(0, phrase_end)
+            local one_beat_end = reaper.TimeMap2_QNToTime(0, phrase_end_qn + 1)
+            desired_end = math.max(phrase_end, math.min(recorded_end, one_beat_end))
+            audio_crossfade = desired_end - phrase_end
+        end
+    end
     if is_midi then
         if cfg.record_lead_out then
             remove_midi_notes_starting_at_or_after(take, phrase_end)
@@ -801,6 +819,9 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     else
         reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
         reaper.SetMediaItemLength(item, desired_end - pos, true)
+        if audio_crossfade > 0 then
+            reaper.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", audio_crossfade)
+        end
     end
     reaper.UpdateItemInProject(item)
 
@@ -816,6 +837,10 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         phrase_items[#phrase_items + 1] = tile
         local tile_pos = dest_anchor - lead_in
         reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_pos)
+        if audio_crossfade > 0 and not is_midi then
+            reaper.SetMediaItemInfo_Value(tile, "D_FADEINLEN", audio_crossfade)
+            reaper.SetMediaItemInfo_Value(tile, "D_FADEOUTLEN", audio_crossfade)
+        end
         if not cfg.record_lead_out and tile_pos + reaper.GetMediaItemInfo_Value(tile, "D_LENGTH")
             > scene.rgnend + 1e-9 then
             local right = reaper.SplitMediaItem(tile, scene.rgnend)
