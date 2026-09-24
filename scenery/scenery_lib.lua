@@ -26,6 +26,8 @@ function M.get_config()
         color_r             = tonumber(r), color_g = tonumber(g), color_b = tonumber(b),
         follow_enabled      = ext_get("follow_enabled", "1") == "1",
         record_auto_loop    = ext_get("record_auto_loop", "1") == "1",
+        record_lead_in      = ext_get("record_lead_in", "0") == "1",
+        record_lead_out     = ext_get("record_lead_out", "0") == "1",
         record_end_of_bar   = ext_get("record_end_of_bar", "1") == "1",
         wait_for_scene_end  = ext_get("wait_for_scene_end", "0") == "1",
         switch_wait_bars    = math.max(0, math.floor(tonumber(ext_get("switch_wait_bars", "1")) or 1)),
@@ -686,16 +688,81 @@ function M.snapshot_item_guids()
     return guids
 end
 
--- Recording starts immediately (not bar-aligned), so the new item is physically
--- split/trimmed to one bar (MIDI_SetItemExtents for MIDI takes, since resizing
--- D_LENGTH alone doesn't update a MIDI take's own PPQ-based extents), then that
--- one-bar unit is physically duplicated across the rest of the scene as linked
--- pooled copies - B_LOOPSRC isn't used since its repeat unit also follows the
--- take's own extents, not D_LENGTH.
+-- With both lead options off, the captured bar-aligned span is duplicated across
+-- the scene as linked pooled copies. B_LOOPSRC isn't used because its repeat
+-- unit follows the take's own extents, not D_LENGTH.
 local linked_chunk
+
+local function phrase_start_for_recording(pos, scene, phrase_bars)
+    if pos <= scene.pos + 1e-9 then return scene.pos end
+
+    local measure = M.measure_at(pos)
+    local phrase_measure = math.floor(measure / phrase_bars) * phrase_bars
+    local phrase_start = M.measure_start_time(phrase_measure)
+    if pos > phrase_start + 1e-9 then
+        phrase_start = M.measure_start_time(phrase_measure + phrase_bars)
+    end
+    return math.max(scene.pos, phrase_start)
+end
+
+local function apply_phrase_recording(track, item, pos, scene, cfg)
+    local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+    local phrase_bars = math.max(1, cfg.switch_wait_bars)
+    local phrase_start = phrase_start_for_recording(pos, scene, phrase_bars)
+    local phrase_end = M.bars_to_time(phrase_start, phrase_bars)
+    if phrase_end <= phrase_start + 1e-9 then return false end
+
+    if not cfg.record_lead_in and pos < phrase_start - 1e-9 then
+        local right = reaper.SplitMediaItem(item, phrase_start)
+        if not right then return false end
+        reaper.DeleteTrackMediaItem(track, item)
+        item = right
+        pos = phrase_start
+        recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+    end
+
+    if not cfg.record_lead_out and recorded_end > phrase_end + 1e-9 then
+        local right = reaper.SplitMediaItem(item, phrase_end)
+        if right then reaper.DeleteTrackMediaItem(track, right) end
+        recorded_end = math.min(recorded_end, phrase_end)
+    end
+
+    local desired_end = phrase_end
+    if cfg.record_lead_out then desired_end = math.max(recorded_end, phrase_end) end
+    local take = reaper.GetActiveTake(item)
+    if take and reaper.TakeIsMIDI(take) then
+        local start_qn = reaper.TimeMap2_timeToQN(0, pos)
+        local end_qn = reaper.TimeMap2_timeToQN(0, desired_end)
+        reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
+    else
+        reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
+        reaper.SetMediaItemLength(item, desired_end - pos, true)
+    end
+    reaper.UpdateItemInProject(item)
+
+    local lead_in = cfg.record_lead_in and math.max(0, phrase_start - pos) or 0
+    local unit = phrase_end - phrase_start
+    local dest_anchor = phrase_end
+    while dest_anchor < scene.rgnend - 1e-9 do
+        local chunk = linked_chunk(item)
+        if not chunk then break end
+        local tile = reaper.AddMediaItemToTrack(track)
+        reaper.SetItemStateChunk(tile, chunk, false)
+        local tile_pos = dest_anchor - lead_in
+        reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_pos)
+        if not cfg.record_lead_out and tile_pos + reaper.GetMediaItemInfo_Value(tile, "D_LENGTH")
+            > scene.rgnend + 1e-9 then
+            local right = reaper.SplitMediaItem(tile, scene.rgnend)
+            if right then reaper.DeleteTrackMediaItem(track, right) end
+        end
+        dest_anchor = dest_anchor + unit
+    end
+    return true
+end
 
 function M.apply_loop_source_to_new_items(existing_guids, scene)
     if not existing_guids or not scene then return 0 end
+    local cfg = M.get_config()
 
     local targets = {}
     for t = 0, reaper.CountTracks(0) - 1 do
@@ -717,6 +784,11 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
     local processed = 0
     for _, target in ipairs(targets) do
         local track, item, pos = target.track, target.item, target.pos
+        if cfg.record_lead_in or cfg.record_lead_out then
+            if apply_phrase_recording(track, item, pos, scene, cfg) then
+                processed = processed + 1
+            end
+        else
         local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
         -- If the item started before this scene (cross-scene recording) or extended
         -- past the scene boundary (wrap-around), use the scene start as the effective
@@ -792,6 +864,7 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
             -- partial bar (e.g. engine follow() moved the loop mid-record) -
             -- it's noise, not something to leave in the project untouched
             reaper.DeleteTrackMediaItem(track, item)
+        end
         end
     end
     return processed

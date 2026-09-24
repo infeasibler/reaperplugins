@@ -13,6 +13,8 @@
 --   [main] Scenery - Toggle record (quantized).lua
 --   [main] Scenery - Toggle auto repeat.lua
 --   [main] Scenery - Toggle insert after current scene.lua
+--   [main] Scenery - Toggle record lead-in.lua
+--   [main] Scenery - Toggle record lead-out.lua
 --   [main] Scenery - Engine (toggle).lua
 --   scenery_lib.lua
 -- @about
@@ -37,7 +39,7 @@
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
 local L = dofile(script_dir .. "scenery_lib.lua")
 
-local WINDOW = { title = "Scenery", w = 260, h = 526 }
+local WINDOW = { title = "Scenery", w = 260, h = 578 }
 local ROW = { h = 26, gap = 4 }
 local PAD = 8
 local DOUBLE_CLICK_SECONDS = 0.35
@@ -318,21 +320,32 @@ local function draw_settings(y, cfg)
         L.set_config("record_end_of_bar", cfg.record_end_of_bar and "0" or "1")
     end
 
+    local lead_in_label = (cfg.record_lead_in and "[x] " or "[ ] ") .. "Record lead-in"
+    if button(PAD, y + (step + ROW.gap) * 6, w, step, lead_in_label) then
+        L.set_config("record_lead_in", cfg.record_lead_in and "0" or "1")
+    end
+
+    local lead_out_label = (cfg.record_lead_out and "[x] " or "[ ] ") .. "Record lead-out"
+    if button(PAD, y + (step + ROW.gap) * 7, w, step, lead_out_label) then
+        L.set_config("record_lead_out", cfg.record_lead_out and "0" or "1")
+    end
+
     local wait_label = (cfg.wait_for_scene_end and "[x] " or "[ ] ") .. "Wait for scene end when launching"
-    if button(PAD, y + (step + ROW.gap) * 6, w, step, wait_label) then
+    if button(PAD, y + (step + ROW.gap) * 8, w, step, wait_label) then
         L.set_config("wait_for_scene_end", cfg.wait_for_scene_end and "0" or "1")
     end
 
     -- only meaningful when not already waiting for the scene to end, so greyed out then
     local wait_bars_disabled = cfg.wait_for_scene_end
-    local wait_bars_y = y + (step + ROW.gap) * 7
-    draw_label("Bars to wait before switching", PAD, wait_bars_y, w - 84, step, COLOR.dim)
+    local wait_bars_y = y + (step + ROW.gap) * 9
+    draw_label("Phrase length", PAD, wait_bars_y, w - 84, step, COLOR.dim)
     if button(gfx.w - PAD - 78, wait_bars_y, 22, step, "-", nil, wait_bars_disabled)
         and cfg.switch_wait_bars > 0 then
         L.set_config("switch_wait_bars", cfg.switch_wait_bars - 1)
     end
-    if button(gfx.w - PAD - 54, wait_bars_y, 30, step, tostring(cfg.switch_wait_bars), nil, wait_bars_disabled) then
-        local ok, input = reaper.GetUserInputs("Bars to wait before switching", 1, "Bars:",
+    if button(gfx.w - PAD - 54, wait_bars_y, 30, step, tostring(math.max(1, cfg.switch_wait_bars)), nil,
+        wait_bars_disabled) then
+        local ok, input = reaper.GetUserInputs("Phrase length", 1, "Length in bars:",
             tostring(cfg.switch_wait_bars))
         if ok then
             L.set_config("switch_wait_bars", math.max(0, math.floor(tonumber(input) or cfg.switch_wait_bars)))
@@ -343,12 +356,12 @@ local function draw_settings(y, cfg)
     end
 
     local auto_repeat_label = (cfg.auto_repeat and "[x] " or "[ ] ") .. "Auto repeat on scene start"
-    if button(PAD, y + (step + ROW.gap) * 8, w, step, auto_repeat_label) then
+    if button(PAD, y + (step + ROW.gap) * 10, w, step, auto_repeat_label) then
         L.set_config("auto_repeat", cfg.auto_repeat and "0" or "1")
     end
 
     local insert_label = (cfg.insert_after_current and "[x] " or "[ ] ") .. "Insert copies after current scene"
-    if button(PAD, y + (step + ROW.gap) * 9, w, step, insert_label) then
+    if button(PAD, y + (step + ROW.gap) * 11, w, step, insert_label) then
         L.set_config("insert_after_current", cfg.insert_after_current and "0" or "1")
     end
 end
@@ -356,7 +369,7 @@ end
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, cfg)
     local w = gfx.w - PAD * 2
-    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 8 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
+    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 10 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end
@@ -423,7 +436,7 @@ local function restore_window()
     local saved = reaper.GetExtState(L.EXT_SECTION, "window")
     local dock, x, y, w, h = saved:match("^(%-?%d+),(%-?%d+),(%-?%d+),(%d+),(%d+)$")
     if not dock then return WINDOW.w, WINDOW.h, 0, nil, nil end
-    return tonumber(w), tonumber(h), tonumber(dock), tonumber(x), tonumber(y)
+    return tonumber(w), math.max(WINDOW.h, tonumber(h)), tonumber(dock), tonumber(x), tonumber(y)
 end
 
 local function frame()
