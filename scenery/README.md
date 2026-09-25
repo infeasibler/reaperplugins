@@ -13,7 +13,7 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 
 | Action | What it does |
 | --- | --- |
-| `Scenery - Launcher` | Scene launcher panel. Left-click or double-click switches to a scene immediately. Right-click renames/resizes, links or merges scenes, clones/copies, and deletes scenes (with or without their items). Also has new/clone/copy, transport and launcher settings. |
+| `Scenery - Launcher` | Scene launcher panel with adjustable UI scale. Left-click or double-click switches to a scene immediately. Right-click renames/resizes, links or merges scenes, clones/copies, and deletes scenes (with or without their items). Also has new/clone/copy, transport and launcher settings. With JS_ReaScriptAPI installed, the title bar includes REAPER's keep-on-top pin. |
 | `Scenery - New scene` | Appends a scene of the default length (8 bars) and loops it. |
 | `Scenery - New scene (custom bars)` | Same, but prompts for the bar count. |
 | `Scenery - Clone current scene` | Creates a scene of the configured length with fully independent item copies, appending it or inserting it after the current scene according to the setting. |

@@ -31,7 +31,7 @@
 --   shared library they all depend on.
 
 -- Scenery: Launcher
--- Ableton-style scene launcher drawn with REAPER's built-in gfx (no extensions needed).
+-- Scene launcher drawn with REAPER's built-in gfx; JS_ReaScriptAPI adds an optional title-bar pin.
 -- Left-click and double-click both switch scenes immediately; smooth seek (if
 -- enabled in Settings) gives the switch a quantized feel.
 -- right-click opens a per-scene menu.
@@ -40,6 +40,7 @@ local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
 local L = dofile(script_dir .. "scenery_lib.lua")
 
 local WINDOW = { title = "Scenery", w = 260, h = 578 }
+local SCALE = { min = 0.75, max = 1.5, step = 0.1, value = 1 }
 local ROW = { h = 26, gap = 4 }
 local PAD = 8
 local DOUBLE_CLICK_SECONDS = 0.35
@@ -60,6 +61,24 @@ local prev_cap = 0
 local last_click = { time = 0, y = -1 }
 local scroll = 0
 
+local function logical_width()
+    return gfx.w / SCALE.value
+end
+
+local function logical_height()
+    return gfx.h / SCALE.value
+end
+
+local function set_font()
+    gfx.setfont(1, "Segoe UI", math.floor(14 * SCALE.value + 0.5))
+end
+
+local function attach_topmost_pin()
+    if not reaper.JS_Window_AttachTopmostPin or not reaper.JS_Window_Find then return end
+    local window = reaper.JS_Window_Find(WINDOW.title, true)
+    if window then reaper.JS_Window_AttachTopmostPin(window) end
+end
+
 -- ------------------------------------------------------------------ paint
 
 local function set_color(c)
@@ -67,24 +86,38 @@ local function set_color(c)
 end
 
 local function hit(x, y, w, h)
-    return mouse.x >= x and mouse.x < x + w and mouse.y >= y and mouse.y < y + h
+    local mouse_x, mouse_y = mouse.x / SCALE.value, mouse.y / SCALE.value
+    return mouse_x >= x and mouse_x < x + w and mouse_y >= y and mouse_y < y + h
 end
 
 local function draw_label(text, x, y, w, h, color)
     local tw, th = gfx.measurestr(text)
+    tw, th = tw / SCALE.value, th / SCALE.value
     while tw > w - 8 and #text > 1 do
         text = text:sub(1, #text - 2) .. "."
-        tw = gfx.measurestr(text)
+        tw = gfx.measurestr(text) / SCALE.value
     end
     set_color(color or COLOR.text)
-    gfx.x = x + (w - tw) / 2
-    gfx.y = y + (h - th) / 2
+    gfx.x = (x + (w - tw) / 2) * SCALE.value
+    gfx.y = (y + (h - th) / 2) * SCALE.value
     gfx.drawstr(text)
 end
 
 local function panel(x, y, w, h, color, hovered)
     set_color(hovered and COLOR.row_hover or color)
-    gfx.rect(x, y, w, h, 1)
+    gfx.rect(x * SCALE.value, y * SCALE.value, w * SCALE.value, h * SCALE.value, 1)
+end
+
+local function resize_window(scale)
+    local dock, x, y, w, h = gfx.dock(-1, 0, 0, 0, 0)
+    local base_w, base_h = w / SCALE.value, h / SCALE.value
+    SCALE.value = scale
+    L.set_config("window_scale", string.format("%.2f", SCALE.value))
+    gfx.quit()
+    gfx.init(WINDOW.title, math.floor(base_w * SCALE.value + 0.5),
+        math.floor(base_h * SCALE.value + 0.5), dock, x, y)
+    attach_topmost_pin()
+    set_font()
 end
 
 local function button(x, y, w, h, label, color, disabled)
@@ -236,7 +269,7 @@ end
 
 local function draw_scene_list(scenes, top, height)
     if #scenes == 0 then
-        draw_label("No scenes yet", PAD, top, gfx.w - PAD * 2, ROW.h, COLOR.dim)
+        draw_label("No scenes yet", PAD, top, logical_width() - PAD * 2, ROW.h, COLOR.dim)
         return
     end
 
@@ -249,7 +282,7 @@ local function draw_scene_list(scenes, top, height)
     for _, scene in ipairs(scenes) do
         local y = top + (scene.num - 1) * step - scroll
         if y + ROW.h > top and y < top + height then
-            local x, w = PAD, gfx.w - PAD * 2 - link_w - ROW.gap
+            local x, w = PAD, logical_width() - PAD * 2 - link_w - ROW.gap
             local hovered = hit(x, y, w, ROW.h)
             panel(x, y, w, ROW.h, row_color(scene, active, next_id), hovered and mouse.lclick)
             draw_label(scene.name, x, y, w, ROW.h)
@@ -274,7 +307,7 @@ end
 
 local function draw_status(y)
     local running = L.engine_running()
-    if button(PAD, y, gfx.w - PAD * 2, 20,
+    if button(PAD, y, logical_width() - PAD * 2, 20,
             running and "Engine on" or "Engine off - click to start",
             running and COLOR.playing or COLOR.button) then
         L.start_engine(script_dir)
@@ -282,15 +315,15 @@ local function draw_status(y)
 end
 
 local function draw_settings(y, cfg)
-    local w = gfx.w - PAD * 2
+    local w = logical_width() - PAD * 2
     local step = 22
 
     draw_label("Default bars", PAD, y, w - 84, step, COLOR.dim)
-    if button(gfx.w - PAD - 78, y, 22, step, "-") and cfg.default_bars > 1 then
+    if button(logical_width() - PAD - 78, y, 22, step, "-") and cfg.default_bars > 1 then
         L.set_config("default_bars", cfg.default_bars - 1)
     end
-    draw_label(tostring(cfg.default_bars), gfx.w - PAD - 54, y, 30, step)
-    if button(gfx.w - PAD - 22, y, 22, step, "+") then
+    draw_label(tostring(cfg.default_bars), logical_width() - PAD - 54, y, 30, step)
+    if button(logical_width() - PAD - 22, y, 22, step, "+") then
         L.set_config("default_bars", cfg.default_bars + 1)
     end
 
@@ -339,11 +372,11 @@ local function draw_settings(y, cfg)
     local wait_bars_disabled = cfg.wait_for_scene_end
     local wait_bars_y = y + (step + ROW.gap) * 9
     draw_label("Phrase length", PAD, wait_bars_y, w - 84, step, COLOR.dim)
-    if button(gfx.w - PAD - 78, wait_bars_y, 22, step, "-", nil, wait_bars_disabled)
+    if button(logical_width() - PAD - 78, wait_bars_y, 22, step, "-", nil, wait_bars_disabled)
         and cfg.switch_wait_bars > 0 then
         L.set_config("switch_wait_bars", cfg.switch_wait_bars - 1)
     end
-    if button(gfx.w - PAD - 54, wait_bars_y, 30, step, tostring(math.max(1, cfg.switch_wait_bars)), nil,
+    if button(logical_width() - PAD - 54, wait_bars_y, 30, step, tostring(math.max(1, cfg.switch_wait_bars)), nil,
         wait_bars_disabled) then
         local ok, input = reaper.GetUserInputs("Phrase length", 1, "Length in bars:",
             tostring(cfg.switch_wait_bars))
@@ -351,7 +384,7 @@ local function draw_settings(y, cfg)
             L.set_config("switch_wait_bars", math.max(0, math.floor(tonumber(input) or cfg.switch_wait_bars)))
         end
     end
-    if button(gfx.w - PAD - 22, wait_bars_y, 22, step, "+", nil, wait_bars_disabled) then
+    if button(logical_width() - PAD - 22, wait_bars_y, 22, step, "+", nil, wait_bars_disabled) then
         L.set_config("switch_wait_bars", cfg.switch_wait_bars + 1)
     end
 
@@ -364,12 +397,26 @@ local function draw_settings(y, cfg)
     if button(PAD, y + (step + ROW.gap) * 11, w, step, insert_label) then
         L.set_config("insert_after_current", cfg.insert_after_current and "0" or "1")
     end
+
+    local scale_y = y + (step + ROW.gap) * 12
+    draw_label("Launcher scale", PAD, scale_y, w - 84, step, COLOR.dim)
+    if button(logical_width() - PAD - 78, scale_y, 22, step, "-", nil,
+        SCALE.value <= SCALE.min) then
+        resize_window(math.max(SCALE.min, SCALE.value - SCALE.step))
+    end
+    draw_label(tostring(math.floor(SCALE.value * 100 + 0.5)) .. "%",
+        logical_width() - PAD - 54, scale_y, 30, step)
+    if button(logical_width() - PAD - 22, scale_y, 22, step, "+", nil,
+        SCALE.value >= SCALE.max) then
+        resize_window(math.min(SCALE.max, SCALE.value + SCALE.step))
+    end
 end
 
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, cfg)
-    local w = gfx.w - PAD * 2
-    local top = gfx.h - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) - (22 + ROW.gap) * 10 - (24 + ROW.gap) * 3 - (22 + ROW.gap)
+    local w = logical_width() - PAD * 2
+    local top = logical_height() - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) -
+        (22 + ROW.gap) * 10 - (24 + ROW.gap) * 3 - (22 + ROW.gap) - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end
@@ -428,15 +475,19 @@ end
 
 local function save_window()
     local dock, x, y, w, h = gfx.dock(-1, 0, 0, 0, 0)
-    L.set_config("window", table.concat({ dock, x, y, w, h }, ","))
+    L.set_config("window", table.concat({ dock, x, y,
+        math.floor(w / SCALE.value + 0.5), math.floor(h / SCALE.value + 0.5) }, ","))
     gfx.quit()
 end
 
 local function restore_window()
+    local saved_scale = tonumber(reaper.GetExtState(L.EXT_SECTION, "window_scale"))
+    SCALE.value = math.min(SCALE.max, math.max(SCALE.min, saved_scale or 1))
     local saved = reaper.GetExtState(L.EXT_SECTION, "window")
     local dock, x, y, w, h = saved:match("^(%-?%d+),(%-?%d+),(%-?%d+),(%d+),(%d+)$")
-    if not dock then return WINDOW.w, WINDOW.h, 0, nil, nil end
-    return tonumber(w), math.max(WINDOW.h, tonumber(h)), tonumber(dock), tonumber(x), tonumber(y)
+    if not dock then return WINDOW.w * SCALE.value, WINDOW.h * SCALE.value, 0, nil, nil end
+    return tonumber(w) * SCALE.value, math.max(WINDOW.h, tonumber(h)) * SCALE.value,
+        tonumber(dock), tonumber(x), tonumber(y)
 end
 
 local function frame()
@@ -462,7 +513,8 @@ end
 
 local w, h, dock, x, y = restore_window()
 gfx.init(WINDOW.title, w, h, dock, x, y)
-gfx.setfont(1, "Segoe UI", 14)
+attach_topmost_pin()
+set_font()
 reaper.atexit(save_window)
 if not L.engine_running() then L.start_engine(script_dir) end
 loop()
