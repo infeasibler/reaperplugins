@@ -213,6 +213,140 @@ local tests = {
             end)
         end,
     },
+    {
+        name = "full-scene MIDI recording activates the take before the final take",
+        run = function()
+            local fake = make_state_fake()
+            local track = {}
+            local takes = {
+                { is_midi = true, notes = 0 },
+                { is_midi = true, notes = 2 },
+                { is_midi = true, notes = 0 },
+            }
+            local item = {
+                guid = "{new-item}",
+                pos = 0,
+                len = 4,
+                takes = takes,
+                active_take = takes[3],
+                loop_source = 1,
+            }
+            fake.CountTracks = function() return 1 end
+            fake.GetTrack = function() return track end
+            fake.CountTrackMediaItems = function() return 1 end
+            fake.GetTrackMediaItem = function() return item end
+            fake.CountMediaItems = function() return 1 end
+            fake.GetMediaItem = function() return item end
+            fake.IsMediaItemSelected = function(target) return target.selected == true end
+            fake.SelectAllMediaItems = function(_, selected)
+                item.selected = selected
+            end
+            fake.SetMediaItemSelected = function(target, selected)
+                target.selected = selected
+            end
+            fake.ValidatePtr2 = function() return true end
+            fake.GetSetMediaItemInfo_String = function(_, key)
+                if key == "GUID" then return true, item.guid end
+            end
+            fake.GetMediaItemInfo_Value = function(_, key)
+                if key == "D_POSITION" then return item.pos end
+                if key == "D_LENGTH" then return item.len end
+            end
+            fake.CountTakes = function(target) return #target.takes end
+            fake.GetTake = function(target, index) return target.takes[index + 1] end
+            fake.TakeIsMIDI = function(take) return take.is_midi end
+            fake.MIDI_CountEvts = function(take)
+                return true, take.notes or 0, take.cc or 0, take.text or 0
+            end
+            fake.SetActiveTake = function(take) item.active_take = take end
+            fake.DeleteTake = function(take)
+                for index, candidate in ipairs(item.takes) do
+                    if candidate == take then
+                        table.remove(item.takes, index)
+                        return
+                    end
+                end
+            end
+            fake.Main_OnCommand = function(command_id)
+                assert_equal(command_id, 40129)
+                fake.DeleteTake(item.active_take)
+            end
+            fake.GetActiveTake = function(target) return target.active_take end
+            fake.TimeMap2_timeToBeats = function(_, time)
+                return 0, math.floor(time / 4), 0, time, 0
+            end
+            fake.TimeMap2_beatsToTime = function(_, _, measure) return measure * 4 end
+            fake.TimeMap2_timeToQN = function(_, time) return time end
+            local loop_source_updates = 0
+            local extent_updates = 0
+            fake.SetMediaItemInfo_Value = function(target, key, value)
+                if key == "B_LOOPSRC" then
+                    target.loop_source = value
+                    loop_source_updates = loop_source_updates + 1
+                end
+            end
+            fake.MIDI_SetItemExtents = function()
+                assert_equal(item.loop_source, 0, "MIDI loop source should be disabled before extending")
+                extent_updates = extent_updates + 1
+            end
+            fake.UpdateItemInProject = function() end
+            fake.SplitMediaItem = function() return nil end
+
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 4,
+                })
+                assert_equal(processed, 1)
+                assert_equal(item.active_take, takes[2])
+                assert_equal(#item.takes, 2)
+                assert_equal(item.len, 4)
+                assert_equal(item.loop_source, 1)
+                assert_equal(loop_source_updates, 0)
+                assert_equal(extent_updates, 0)
+
+                local nonempty_final_takes = {
+                    { is_midi = true, notes = 0 },
+                    { is_midi = true, notes = 2 },
+                    { is_midi = true, notes = 1 },
+                }
+                item.takes = nonempty_final_takes
+                item.active_take = nonempty_final_takes[3]
+                processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 4,
+                })
+                assert_equal(processed, 1)
+                assert_equal(item.active_take, nonempty_final_takes[2])
+                assert_equal(#item.takes, 3)
+
+                item.len = 8
+                item.active_take = nonempty_final_takes[3]
+                processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 4,
+                })
+                assert_equal(processed, 1)
+                assert_equal(item.active_take, nonempty_final_takes[2])
+                assert_equal(extent_updates, 1)
+
+                local two_takes = {
+                    { is_midi = true, notes = 2 },
+                    { is_midi = true, notes = 0 },
+                }
+                item.len = 4
+                item.takes = two_takes
+                item.active_take = two_takes[2]
+                processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 4,
+                })
+                assert_equal(processed, 1)
+                assert_equal(item.active_take, two_takes[1])
+                assert_equal(#item.takes, 1)
+            end)
+        end,
+    },
 }
 
 for _, test_case in ipairs(tests) do

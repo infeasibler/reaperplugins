@@ -815,6 +815,7 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         end
         local start_qn = reaper.TimeMap2_timeToQN(0, pos)
         local end_qn = reaper.TimeMap2_timeToQN(0, desired_end)
+        reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
         reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
     else
         reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
@@ -854,6 +855,47 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     return true
 end
 
+local function activate_previous_full_scene_take(item, pos, recorded_end, scene)
+    if math.abs(pos - scene.pos) > 1e-9 or recorded_end < scene.rgnend - 0.2 then
+        return false
+    end
+
+    local take_count = reaper.CountTakes(item)
+    if take_count < 2 then return false end
+    local previous_take = reaper.GetTake(item, take_count - 2)
+    local last_take = reaper.GetTake(item, take_count - 1)
+    if previous_take and last_take
+        and reaper.TakeIsMIDI(previous_take) and reaper.TakeIsMIDI(last_take) then
+        local _, note_count, cc_count, text_count = reaper.MIDI_CountEvts(last_take)
+        if (note_count or 0) == 0 and (cc_count or 0) == 0 and (text_count or 0) == 0 then
+            local selected_items = {}
+            for index = 0, reaper.CountMediaItems(0) - 1 do
+                local candidate = reaper.GetMediaItem(0, index)
+                if reaper.IsMediaItemSelected(candidate) then
+                    selected_items[#selected_items + 1] = candidate
+                    reaper.SetMediaItemSelected(candidate, false)
+                end
+            end
+            reaper.SetMediaItemSelected(item, true)
+            reaper.SetActiveTake(last_take)
+            reaper.Main_OnCommand(40129, 0)
+            if reaper.ValidatePtr2(0, item, "MediaItem*") then
+                reaper.SetActiveTake(previous_take)
+            end
+            reaper.SetMediaItemSelected(item, false)
+            for _, selected_item in ipairs(selected_items) do
+                if reaper.ValidatePtr2(0, selected_item, "MediaItem*") then
+                    reaper.SetMediaItemSelected(selected_item, true)
+                end
+            end
+        else
+            reaper.SetActiveTake(previous_take)
+        end
+        return math.abs(recorded_end - scene.rgnend) <= 0.2
+    end
+    return false
+end
+
 function M.apply_loop_source_to_new_items(existing_guids, scene)
     if not existing_guids or not scene then return 0 end
     local cfg = M.get_config()
@@ -878,12 +920,14 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
     local processed = 0
     for _, target in ipairs(targets) do
         local track, item, pos = target.track, target.item, target.pos
-        if cfg.record_lead_in or cfg.record_lead_out then
+        local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        if activate_previous_full_scene_take(item, pos, recorded_end, scene) then
+            processed = processed + 1
+        elseif cfg.record_lead_in or cfg.record_lead_out then
             if apply_phrase_recording(track, item, pos, scene, cfg) then
                 processed = processed + 1
             end
         else
-        local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
         -- If the item started before this scene (cross-scene recording) or extended
         -- past the scene boundary (wrap-around), use the scene start as the effective
         -- starting position for bar-snapping, since that's where usable content begins.
@@ -927,6 +971,7 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
             if take and reaper.TakeIsMIDI(take) then
                 local start_qn = reaper.TimeMap2_timeToQN(0, snapped_pos)
                 local end_qn = reaper.TimeMap2_timeToQN(0, snapped_end)
+                reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
                 reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
             else
                 -- disable loop-source first, else REAPER auto-repeats the take

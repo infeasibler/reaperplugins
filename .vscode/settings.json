@@ -1,5 +1,6 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "npx --yes --package=fengari-node-cli fengari": true
+        "npx --yes --package=fengari-node-cli fengari": true,
+        ".\\copy-scenery-to-reaper-scripts.ps1": true
     }
 }
