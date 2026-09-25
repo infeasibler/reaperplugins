@@ -6,9 +6,8 @@
 				<description><![CDATA[Scene-based looping toolkit for REAPER with a launcher panel, scene actions, a follow-along engine, and bar-quantized recording.]]></description>
 				<link rel="website">https://github.com/infeasibler/reaperplugins</link>
 			</metadata>
-			<version name="0.3.6" author="infeasibler" time="2026-09-24T00:00:00Z">
-				<changelog><![CDATA[- Added adjustable launcher scaling with a saved size preference.
-- Added an optional keep-on-top pin when JS_ReaScriptAPI is installed.]]></changelog>
+			<version name="0.3.7" author="infeasibler" time="2026-09-25T00:00:00Z">
+				<changelog><![CDATA[- Fixed full-scene MIDI recordings that left an empty take active.]]></changelog>
 				<source main="main" type="script" file="Scenery - Launcher.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Launcher.lua</source>
 				<source main="main" type="script" file="Scenery - New scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene.lua</source>
 				<source main="main" type="script" file="Scenery - New scene (custom bars).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene%20(custom%20bars).lua</source>
