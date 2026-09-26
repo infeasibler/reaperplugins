@@ -456,7 +456,7 @@ end
 function M.toggle_record(cfg, script_dir)
     if M.is_recording() then
         if cfg.record_end_of_bar and M.engine_running() then
-            M.request_quantized_stop(cfg.switch_wait_bars)
+            M.request_quantized_stop(cfg.switch_wait_bars, cfg.record_lead_out)
         else
             reaper.Main_OnCommand(1013, 0)
         end
@@ -468,12 +468,13 @@ function M.toggle_record(cfg, script_dir)
     reaper.Main_OnCommand(1013, 0)
 end
 
--- Requests that recording continue one bar beyond the current project-aligned
--- phrase; the engine's poll loop watches for this and stops.
-function M.request_quantized_stop(phrase_bars)
+-- Keep recording through the phrase boundary, with one extra bar only when
+-- lead-out is enabled; the engine's poll loop watches for this and stops.
+function M.request_quantized_stop(phrase_bars, lead_out)
     local measure = M.measure_at(M.cursor_position())
     local phrase_end_measure = next_phrase_end_measure(measure, phrase_bars)
-    local target = M.measure_start_time(phrase_end_measure + 1) + 0.02
+    local target_measure = phrase_end_measure + (lead_out and 1 or 0)
+    local target = M.measure_start_time(target_measure) + 0.02
     reaper.SetExtState(M.EXT_SECTION, "pending_record_stop", tostring(target), false)
 end
 

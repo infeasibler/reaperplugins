@@ -50,6 +50,33 @@ end
 
 local tests = {
     {
+        name = "quantized recording stop adds a bar only for lead-out",
+        run = function()
+            local fake = make_state_fake()
+            fake.GetPlayState = function() return 4 end
+            fake.GetCursorPosition = function() return 4 end
+            fake.values[scenery.EXT_SECTION .. ":engine_running"] = "1"
+            fake.TimeMap2_timeToBeats = function(_, time)
+                return 0, math.floor(time / 4), 0, time, 0
+            end
+            fake.TimeMap2_beatsToTime = function(_, _, measure) return measure * 4 end
+
+            with_fake_reaper(fake, function()
+                local cfg = {
+                    record_end_of_bar = true,
+                    record_lead_out = false,
+                    switch_wait_bars = 4,
+                }
+                scenery.toggle_record(cfg, "")
+                assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 16.02)
+
+                cfg.record_lead_out = true
+                scenery.toggle_record(cfg, "")
+                assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 20.02)
+            end)
+        end,
+    },
+    {
         name = "scene_name preserves labels and link suffix",
         run = function()
             assert_equal(scenery.scene_name("Verse", false), "Verse")
