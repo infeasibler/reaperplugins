@@ -48,7 +48,177 @@ local function make_state_fake()
     }
 end
 
+local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout)
+    local fake = make_state_fake()
+    local markers = { { true, 0, 4, "Source", 1, 0 } }
+    local track = { items = {} }
+    local lead_in = { pos = -1, len = 4 }
+    local destination_item_before = { pos = 2, len = 4 }
+    local destination_item = { pos = 11, len = 2 }
+    track.items = { lead_in, destination_item_before, destination_item }
+    local audio_first
+    local audio_leadout
+    if with_audio_leadout then
+        audio_first = { pos = 0, len = 1, fade_in = 0, fade_out = 0, take = { is_midi = false } }
+        audio_leadout = { pos = 3, len = 2, fade_in = 0, fade_out = 1, take = { is_midi = false } }
+        track.items[#track.items + 1] = audio_first
+        track.items[#track.items + 1] = audio_leadout
+    end
+    fake.values[scenery.EXT_SECTION .. ":default_bars"] = "2"
+    if skip_occupied_tracks then
+        fake.values[scenery.EXT_SECTION .. ":skip_occupied_tracks"] = "1"
+    end
+    fake.EnumProjectMarkers3 = function(_, index)
+        local marker = markers[index + 1]
+        if not marker then return 0 end
+        return 1, marker[1], marker[2], marker[3], marker[4], marker[5], marker[6]
+    end
+    fake.TimeMap2_timeToBeats = function(_, time)
+        return 0, math.floor(time / 4), 0, time, 0
+    end
+    fake.TimeMap2_beatsToTime = function(_, _, measure) return measure * 4 end
+    fake.ColorToNative = function() return 1 end
+    fake.AddProjectMarker2 = function(_, is_region, pos, rgnend, name, id, color)
+        markers[#markers + 1] = { is_region, pos, rgnend, name, id, color }
+        return #markers
+    end
+    fake.CountTracks = function() return 1 end
+    fake.GetTrack = function() return track end
+    fake.CountTrackMediaItems = function(target) return #target.items end
+    fake.GetTrackMediaItem = function(target, index) return target.items[index + 1] end
+    fake.GetMediaItemInfo_Value = function(item, key)
+        if key == "D_POSITION" then return item.pos end
+        if key == "D_LENGTH" then return item.len end
+        if key == "D_FADEINLEN" then return item.fade_in or 0 end
+        if key == "D_FADEOUTLEN" then return item.fade_out or 0 end
+    end
+    fake.GetItemStateChunk = function(item)
+        return true, string.format("ITEM\nPOSITION %.17g\nLENGTH %.17g\nFADEIN %.17g\nFADEOUT %.17g\nTAKE %d\nMIDI %d\n",
+            item.pos, item.len, item.fade_in or 0, item.fade_out or 0,
+            item.take and 1 or 0,
+            item.take and item.take.is_midi and 1 or 0)
+    end
+    fake.SetItemStateChunk = function(item, chunk)
+        item.pos = tonumber(chunk:match("POSITION ([^\n]+)")) or item.pos
+        item.len = tonumber(chunk:match("LENGTH ([^\n]+)")) or item.len
+        item.fade_in = tonumber(chunk:match("FADEIN ([^\n]+)")) or 0
+        item.fade_out = tonumber(chunk:match("FADEOUT ([^\n]+)")) or 0
+        local has_take = chunk:match("TAKE (%d+)")
+        local is_midi = chunk:match("MIDI (%d+)")
+        if has_take == "1" then item.take = { is_midi = is_midi == "1" } end
+        return true
+    end
+    fake.AddMediaItemToTrack = function(target)
+        local item = { pos = 0, len = 0 }
+        target.items[#target.items + 1] = item
+        return item
+    end
+    fake.SetMediaItemInfo_Value = function(item, key, value)
+        if key == "D_POSITION" then item.pos = value end
+        if key == "D_FADEINLEN" then item.fade_in = value end
+        if key == "D_FADEOUTLEN" then item.fade_out = value end
+    end
+    fake.GetActiveTake = function(item) return item.take end
+    fake.TakeIsMIDI = function(take) return take.is_midi end
+    fake.SplitMediaItem = function(item, split_pos)
+        local right = { pos = split_pos, len = item.pos + item.len - split_pos }
+        item.len = split_pos - item.pos
+        track.items[#track.items + 1] = right
+        return right
+    end
+    fake.DeleteTrackMediaItem = function(target, item_to_delete)
+        for index, item in ipairs(target.items) do
+            if item == item_to_delete then
+                table.remove(target.items, index)
+                return
+            end
+        end
+    end
+    return fake, track, lead_in, destination_item_before, destination_item, audio_first, audio_leadout
+end
+
 local tests = {
+    {
+        name = "clone replaces destination items and copies lead-in overlap by default",
+        run = function()
+            local fake, track, lead_in, destination_item_before, destination_item = make_duplicate_fake(false)
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.get_config().skip_occupied_tracks, false)
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 })
+                assert_equal(lead_in.pos, -1)
+                assert_equal(lead_in.len, 4)
+                assert_equal(destination_item_before.pos, 2)
+                assert_equal(destination_item_before.len, 2)
+                assert_equal(destination_item.pos, 11)
+                assert_equal(destination_item.len, 1)
+
+                local copies = {}
+                for _, item in ipairs(track.items) do
+                    if item ~= lead_in and item ~= destination_item_before and item ~= destination_item then
+                        if item.pos == 12 then
+                            assert_equal(item.len, 1, "destination tail should remain outside the scene")
+                        else
+                            copies[#copies + 1] = item
+                        end
+                    end
+                end
+                assert_equal(#copies, 4)
+                assert_equal(copies[1].pos, 3)
+                assert_equal(copies[2].pos, 6)
+                assert_equal(copies[3].pos, 7)
+                assert_equal(copies[4].pos, 10)
+            end)
+        end,
+    },
+    {
+        name = "skip occupied tracks leaves destination items and skips their copies",
+        run = function()
+            local fake, track, lead_in, destination_item_before, destination_item = make_duplicate_fake(true)
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.get_config().skip_occupied_tracks, true)
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 })
+                assert_equal(#track.items, 3)
+                assert_equal(track.items[1], lead_in)
+                assert_equal(track.items[2], destination_item_before)
+                assert_equal(track.items[3], destination_item)
+                assert_equal(destination_item_before.pos, 2)
+                assert_equal(destination_item_before.len, 4)
+                assert_equal(destination_item.pos, 11)
+                assert_equal(destination_item.len, 2)
+            end)
+        end,
+    },
+    {
+        name = "clone preserves and crossfades audio lead-out overlap",
+        run = function()
+            local fake, track, _, _, _, audio_first, audio_leadout = make_duplicate_fake(false, true)
+            with_fake_reaper(fake, function()
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 })
+                assert_equal(audio_leadout.pos, 3)
+                assert_equal(audio_leadout.len, 2)
+                assert_equal(audio_leadout.fade_out, 1)
+
+                local first_phrases = {}
+                local leadout_copies = {}
+                for _, item in ipairs(track.items) do
+                    if item ~= audio_first and item ~= audio_leadout and item.take and not item.take.is_midi then
+                        if item.pos == 4 or item.pos == 8 then
+                            first_phrases[#first_phrases + 1] = item
+                        elseif item.pos == 7 or item.pos == 11 then
+                            leadout_copies[#leadout_copies + 1] = item
+                        end
+                    end
+                end
+                assert_equal(#first_phrases, 2)
+                assert_equal(first_phrases[1].fade_in, 1)
+                assert_equal(first_phrases[2].fade_in, 1)
+                assert_equal(#leadout_copies, 2)
+                assert_equal(leadout_copies[1].len, 2)
+                assert_equal(leadout_copies[2].len, 2)
+                assert_equal(leadout_copies[2].fade_out, 1)
+            end)
+        end,
+    },
     {
         name = "quantized recording stop adds a bar only for lead-out",
         run = function()

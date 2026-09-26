@@ -403,7 +403,12 @@ local function draw_settings(y, cfg)
         L.set_config("insert_after_current", cfg.insert_after_current and "0" or "1")
     end
 
-    local scale_y = y + (step + ROW.gap) * 13
+    local skip_occupied_label = (cfg.skip_occupied_tracks and "[x] " or "[ ] ") .. "Skip occupied tracks when copying"
+    if button(PAD, y + (step + ROW.gap) * 13, w, step, skip_occupied_label) then
+        L.set_config("skip_occupied_tracks", cfg.skip_occupied_tracks and "0" or "1")
+    end
+
+    local scale_y = y + (step + ROW.gap) * 14
     draw_label("Launcher scale", PAD, scale_y, w - 84, step, COLOR.dim)
     if button(logical_width() - PAD - 78, scale_y, 22, step, "-", nil,
         SCALE.value <= SCALE.min) then
@@ -421,7 +426,7 @@ end
 local function draw_footer(scenes, cfg)
     local w = logical_width() - PAD * 2
     local top = logical_height() - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) -
-        (22 + ROW.gap) * 11 - (24 + ROW.gap) * 3 - (22 + ROW.gap) - (22 + ROW.gap)
+        (22 + ROW.gap) * 12 - (24 + ROW.gap) * 3 - (22 + ROW.gap) - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end

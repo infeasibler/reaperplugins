@@ -32,6 +32,7 @@ function M.get_config()
         record_end_of_bar   = ext_get("record_end_of_bar", "1") == "1",
         wait_for_scene_end  = ext_get("wait_for_scene_end", "0") == "1",
         switch_wait_bars    = math.max(0, math.floor(tonumber(ext_get("switch_wait_bars", "1")) or 1)),
+        skip_occupied_tracks = ext_get("skip_occupied_tracks", "0") == "1",
         auto_repeat         = ext_get("auto_repeat", "1") == "1",
         insert_after_current = ext_get("insert_after_current", "0") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
@@ -639,21 +640,157 @@ function M.insert_scene_after(source, bars)
     return create_scene_at(start, bars, scenes)
 end
 
+local function is_audio_item(item)
+    local take = reaper.GetActiveTake(item)
+    return take and not reaper.TakeIsMIDI(take)
+end
+
+local function leadout_crossfade(item, boundary)
+    if not is_audio_item(item) then return nil end
+    local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+    local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+    local overhang = item_end - boundary
+    if pos >= boundary - 1e-9 or overhang <= 1e-9 then return nil end
+
+    local fade_out = reaper.GetMediaItemInfo_Value(item, "D_FADEOUTLEN")
+    if fade_out + 1e-9 < overhang then return nil end
+    return { start = boundary, length = overhang }
+end
+
+local function add_crossfade(crossfades, track, crossfade)
+    local existing = crossfades[track]
+    if not existing or crossfade.length > existing.length then
+        crossfades[track] = crossfade
+    end
+end
+
+local function crossfades_at_boundary(boundary)
+    local crossfades = {}
+    for track_index = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, track_index)
+        for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, item_index)
+            local crossfade = leadout_crossfade(item, boundary)
+            if crossfade then add_crossfade(crossfades, track, crossfade) end
+        end
+    end
+    return crossfades
+end
+
+local function crossfades_for_tile(source_crossfades, source_end, dest_start)
+    local crossfades = {}
+    for track, crossfade in pairs(source_crossfades) do
+        crossfades[track] = {
+            start = dest_start + crossfade.start - source_end,
+            length = crossfade.length,
+        }
+    end
+    return crossfades
+end
+
+local function source_items_in_range(start_time, end_time)
+    local source_items = {}
+    for track_index = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, track_index)
+        local items = {}
+        for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, item_index)
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            if pos < end_time - 1e-9 and item_end > start_time + 1e-9 then
+                items[#items + 1] = item
+            end
+        end
+        source_items[track] = items
+    end
+    return source_items
+end
+
+local function occupied_tracks_in_range(start_time, end_time)
+    local occupied = {}
+    for track_index = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, track_index)
+        for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, item_index)
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            if pos < end_time - 1e-9 and item_end > start_time + 1e-9 then
+                occupied[track] = true
+                break
+            end
+        end
+    end
+    return occupied
+end
+
+local function clear_items_in_range(start_time, end_time)
+    local incoming_crossfades = {}
+    for track_index = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, track_index)
+        local overlapping = {}
+        for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, item_index)
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            if pos < end_time - 1e-9 and item_end > start_time + 1e-9 then
+                local crossfade = pos < start_time - 1e-9 and leadout_crossfade(item, start_time)
+                if crossfade then
+                    add_crossfade(incoming_crossfades, track, crossfade)
+                else
+                    overlapping[#overlapping + 1] = item
+                end
+            end
+        end
+
+        for _, item in ipairs(overlapping) do
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            if pos < start_time - 1e-9 then
+                item = reaper.SplitMediaItem(item, start_time)
+            end
+            if item then
+                pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                if pos < end_time - 1e-9 then
+                    if item_end > end_time + 1e-9 and not reaper.SplitMediaItem(item, end_time) then
+                        item = nil
+                    end
+                    if item then reaper.DeleteTrackMediaItem(track, item) end
+                end
+            end
+        end
+    end
+    return incoming_crossfades
+end
+
 function M.duplicate_scene(source, copy_fn)
     local cfg = M.get_config()
     local bars = cfg.default_bars
+    local source_items = source_items_in_range(source.pos, source.rgnend)
+    local source_crossfades = crossfades_at_boundary(source.rgnend)
     local scene = cfg.insert_after_current and M.insert_scene_after(source, bars) or M.create_scene(bars)
     local unit = source.rgnend - source.pos
     copy_fn = copy_fn or M.copy_items
+    local occupied_tracks
+    local incoming_crossfades = {}
+    if cfg.skip_occupied_tracks then
+        occupied_tracks = occupied_tracks_in_range(scene.pos, scene.rgnend)
+    else
+        incoming_crossfades = clear_items_in_range(scene.pos, scene.rgnend)
+    end
     if unit <= 1e-9 then
-        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend)
+        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend, occupied_tracks,
+            incoming_crossfades, source_items)
         return scene
     end
     local dest = scene.pos
+    local first_tile = true
     while dest < scene.rgnend - 1e-9 do
         local tile_end = math.min(dest + unit, scene.rgnend)
-        copy_fn(source.pos, source.rgnend, dest, tile_end)
+        local crossfades = first_tile and incoming_crossfades
+            or crossfades_for_tile(source_crossfades, source.rgnend, dest)
+        copy_fn(source.pos, source.rgnend, dest, tile_end, occupied_tracks, crossfades, source_items)
         dest = dest + unit
+        first_tile = false
     end
     return scene
 end
@@ -1082,40 +1219,73 @@ linked_chunk = function(item)
     return source_chunk(item, true)
 end
 
--- Copies every item starting within [src_start, src_end) to the same track,
--- offset to dest_start and clamped so nothing overruns dest_end.
-local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, link_pool)
+-- Copies every item overlapping [src_start, src_end) to the same track,
+-- preserving its source-relative offset; ordinary items are clamped to dest_end.
+local function apply_audio_fade_in(item, crossfade)
+    if not is_audio_item(item) then return end
+    local fade_start = crossfade.start
+    local fade_end = fade_start + crossfade.length
+    local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+    local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+    if item_end <= fade_start + 1e-9 or pos >= fade_end - 1e-9 then return end
+
+    if pos < fade_start - 1e-9 then
+        item = reaper.SplitMediaItem(item, fade_start)
+        if not item then return end
+        pos = fade_start
+    end
+
+    local fade_in = math.min(fade_end - pos, item_end - pos)
+    local existing_fade = reaper.GetMediaItemInfo_Value(item, "D_FADEINLEN")
+    if fade_in > existing_fade then
+        reaper.SetMediaItemInfo_Value(item, "D_FADEINLEN", fade_in)
+    end
+end
+
+local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, link_pool, occupied_tracks,
+    incoming_crossfades, source_items)
     local offset = dest_start - src_start
     local copied = 0
     for t = 0, reaper.CountTracks(0) - 1 do
         local track = reaper.GetTrack(0, t)
-        local sources = {}
-        for k = 0, reaper.CountTrackMediaItems(track) - 1 do
-            local item = reaper.GetTrackMediaItem(track, k)
-            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-            if pos >= src_start - 1e-9 and pos < src_end - 1e-9 then
-                sources[#sources + 1] = item
+        if not occupied_tracks or not occupied_tracks[track] then
+            local candidates = source_items and source_items[track] or {}
+            if not source_items then
+                for k = 0, reaper.CountTrackMediaItems(track) - 1 do
+                    candidates[#candidates + 1] = reaper.GetTrackMediaItem(track, k)
+                end
             end
-        end
-        for _, item in ipairs(sources) do
-            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + offset
-            -- an item whose offset position already lands at/past dest_end has nothing
-            -- to keep - SplitMediaItem can't split before an item's own start, so it
-            -- would otherwise be copied in full and left overhanging unclamped
-            if pos < dest_end - 1e-9 then
-                local chunk = source_chunk(item, link_pool)
-                if chunk then
-                    local new_item = reaper.AddMediaItemToTrack(track)
-                    reaper.SetItemStateChunk(new_item, chunk, false)
-                    local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-                    reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", pos)
-                    if pos + len > dest_end + 1e-9 then
-                        -- split rather than shrink D_LENGTH: for MIDI takes the source's own
-                        -- PPQ extents don't follow D_LENGTH, so notes past dest_end would still show
-                        local right = reaper.SplitMediaItem(new_item, dest_end)
-                        if right then reaper.DeleteTrackMediaItem(track, right) end
+            local sources = {}
+            for _, item in ipairs(candidates) do
+                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                if pos < src_end - 1e-9 and item_end > src_start + 1e-9 then
+                    sources[#sources + 1] = { item = item, leadout = leadout_crossfade(item, src_end) }
+                end
+            end
+            for _, source in ipairs(sources) do
+                local item = source.item
+                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + offset
+                -- an item whose offset position already lands at/past dest_end has nothing
+                -- to keep - SplitMediaItem can't split before an item's own start, so it
+                -- would otherwise be copied in full and left overhanging unclamped
+                if pos < dest_end - 1e-9 then
+                    local chunk = source_chunk(item, link_pool)
+                    if chunk then
+                        local new_item = reaper.AddMediaItemToTrack(track)
+                        reaper.SetItemStateChunk(new_item, chunk, false)
+                        local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", pos)
+                        local crossfade = incoming_crossfades and incoming_crossfades[track]
+                        if crossfade then apply_audio_fade_in(new_item, crossfade) end
+                        if pos + len > dest_end + 1e-9 and not source.leadout then
+                            -- split rather than shrink D_LENGTH: for MIDI takes the source's own
+                            -- PPQ extents don't follow D_LENGTH, so notes past dest_end would still show
+                            local right = reaper.SplitMediaItem(new_item, dest_end)
+                            if right then reaper.DeleteTrackMediaItem(track, right) end
+                        end
+                        copied = copied + 1
                     end
-                    copied = copied + 1
                 end
             end
         end
@@ -1123,12 +1293,15 @@ local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, li
     return copied
 end
 
-function M.copy_items(src_start, src_end, dest_start, dest_end)
-    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, false)
+function M.copy_items(src_start, src_end, dest_start, dest_end, occupied_tracks, incoming_crossfades, source_items)
+    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, false,
+        occupied_tracks, incoming_crossfades, source_items)
 end
 
-function M.copy_items_linked(src_start, src_end, dest_start, dest_end)
-    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, true)
+function M.copy_items_linked(src_start, src_end, dest_start, dest_end, occupied_tracks, incoming_crossfades,
+    source_items)
+    return copy_items_with_mode(src_start, src_end, dest_start, dest_end, true,
+        occupied_tracks, incoming_crossfades, source_items)
 end
 
 -- ------------------------------------------------------------------ misc
