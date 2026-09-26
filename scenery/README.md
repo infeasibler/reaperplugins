@@ -50,7 +50,6 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 
 - Clone and Copy duplicate media items only — envelopes, automation and tempo markers are not copied.
 - Copy preserves each source item's `IGUID` and MIDI `POOLEDEVTS` pooled/comping identities while giving the new item its own `GUID`; Clone gives all three identities fresh values, so its content is independent.
-- New scenes are always appended after the last one; there is no insert-between action, and deleting a scene leaves its gap on the timeline.
 - Only the last scene can have its length changed.
 
 ## Planned

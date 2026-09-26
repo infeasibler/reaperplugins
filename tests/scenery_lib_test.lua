@@ -517,6 +517,38 @@ local tests = {
                 assert_equal(track.items[2].pos, 0)
                 assert_equal(track.items[2].len, 16)
             end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_backfill"] = "0"
+            local item_at_scene_start = { guid = "{phrase-alignment}", pos = 8, len = 24 }
+            track.items = { item_at_scene_start }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 8,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 3)
+                assert_equal(track.items[1].pos, 16)
+                assert_equal(track.items[1].len, 16)
+                assert_equal(track.items[2].pos, 32)
+                assert_equal(track.items[3].pos, 48)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_end_of_bar"] = "1"
+            local long_recording = { guid = "{long-recording}", pos = 0, len = 32 }
+            track.items = { long_recording }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 2)
+                for index, expected_pos in ipairs({ 0, 32 }) do
+                    assert_equal(track.items[index].pos, expected_pos)
+                    assert_equal(track.items[index].len, 32)
+                end
+            end)
         end,
     },
     {

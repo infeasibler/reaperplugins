@@ -893,8 +893,6 @@ local function glue_midi_phrase_items(items)
 end
 
 local function phrase_start_for_recording(pos, scene, phrase_bars)
-    if pos <= scene.pos + 1e-9 then return scene.pos end
-
     local measure = M.measure_at(pos)
     local phrase_measure = math.floor(measure / phrase_bars) * phrase_bars
     local phrase_start = M.measure_start_time(phrase_measure)
@@ -944,8 +942,15 @@ end
 local function backfill_loop_source(track, item, scene, phrase_start, phrase_end)
     if phrase_start <= scene.pos + 1e-9 then return end
     local unit = phrase_end - phrase_start
-    local phrase_item = create_phrase_item(track, item, phrase_start, phrase_end)
-    if not phrase_item then return end
+    local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+    local item_end = item_pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+    local phrase_item = item
+    local temporary_phrase_item = false
+    if math.abs(item_pos - phrase_start) > 1e-9 or math.abs(item_end - phrase_end) > 1e-9 then
+        phrase_item = create_phrase_item(track, item, phrase_start, phrase_end)
+        if not phrase_item then return end
+        temporary_phrase_item = true
+    end
 
     local dest = phrase_start
     while dest > scene.pos + 1e-9 do
@@ -961,7 +966,9 @@ local function backfill_loop_source(track, item, scene, phrase_start, phrase_end
         end
         dest = math.max(scene.pos, dest - unit)
     end
-    reaper.DeleteTrackMediaItem(track, phrase_item)
+    if temporary_phrase_item then
+        reaper.DeleteTrackMediaItem(track, phrase_item)
+    end
 end
 
 local function apply_phrase_recording(track, item, pos, scene, cfg)
@@ -970,12 +977,7 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     local phrase_start = phrase_start_for_recording(pos, scene, phrase_bars)
     local phrase_end = M.bars_to_time(phrase_start, phrase_bars)
     if cfg.record_end_of_bar then
-        local capture_end = M.snap_to_bar(recorded_end, "next", 0.2)
-        local loop_end_measure = M.measure_at(capture_end) - 1
-        local captured_phrase_end = M.measure_start_time(loop_end_measure)
-        if captured_phrase_end > phrase_end + 1e-9 then
-            phrase_end = captured_phrase_end
-        end
+        phrase_end = math.max(phrase_end, M.snap_to_bar(recorded_end, "next", 0.2))
     end
     if phrase_end <= phrase_start + 1e-9 then return false end
 
@@ -1125,7 +1127,7 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
         local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
         if activate_previous_full_scene_take(item, pos, recorded_end, scene) then
             processed = processed + 1
-        elseif cfg.record_lead_in or cfg.record_lead_out then
+        elseif cfg.record_auto_loop or cfg.record_backfill or cfg.record_lead_in or cfg.record_lead_out then
             if apply_phrase_recording(track, item, pos, scene, cfg) then
                 processed = processed + 1
             end
