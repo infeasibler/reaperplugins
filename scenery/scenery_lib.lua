@@ -977,7 +977,11 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     local phrase_start = phrase_start_for_recording(pos, scene, phrase_bars)
     local phrase_end = M.bars_to_time(phrase_start, phrase_bars)
     if cfg.record_end_of_bar then
-        phrase_end = math.max(phrase_end, M.snap_to_bar(recorded_end, "next", 0.2))
+        local capture_end = M.snap_to_bar(recorded_end, "next", 0.2)
+        if cfg.record_lead_out then
+            capture_end = M.measure_start_time(M.measure_at(capture_end) - 1)
+        end
+        phrase_end = math.max(phrase_end, capture_end)
     end
     if phrase_end <= phrase_start + 1e-9 then return false end
 

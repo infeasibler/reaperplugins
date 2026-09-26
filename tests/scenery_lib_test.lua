@@ -549,6 +549,58 @@ local tests = {
                     assert_equal(track.items[index].len, 32)
                 end
             end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
+            local leadout_recording = {
+                guid = "{leadout-recording}",
+                pos = 8,
+                len = 44,
+                take = { is_midi = true },
+            }
+            track.items = { leadout_recording }
+            fake.GetActiveTake = function(target) return target.take end
+            fake.TakeIsMIDI = function(take) return take and take.is_midi end
+            fake.MIDI_CountEvts = function() return true, 0, 0, 0 end
+            fake.MIDI_SetItemExtents = function(target, start_qn, end_qn)
+                target.len = end_qn - start_qn
+            end
+            fake.CountMediaItems = function() return #track.items end
+            fake.GetMediaItem = function(_, index) return track.items[index + 1] end
+            fake.IsMediaItemSelected = function(target) return target.selected == true end
+            fake.SelectAllMediaItems = function(_, selected)
+                for _, candidate in ipairs(track.items) do candidate.selected = selected end
+            end
+            fake.SetMediaItemSelected = function(target, selected) target.selected = selected end
+            fake.Main_OnCommand = function(command_id) assert_equal(command_id, 40362) end
+            fake.CountSelectedMediaItems = function()
+                local count = 0
+                for _, candidate in ipairs(track.items) do
+                    if candidate.selected then count = count + 1 end
+                end
+                return count
+            end
+            fake.GetSelectedMediaItem = function(_, index)
+                local selected = {}
+                for _, candidate in ipairs(track.items) do
+                    if candidate.selected then selected[#selected + 1] = candidate end
+                end
+                return selected[index + 1]
+            end
+            fake.ValidatePtr2 = function() return true end
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 8,
+                    rgnend = 80,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 2)
+                assert_equal(track.items[1].pos, 8)
+                assert_equal(track.items[1].len, 44)
+                assert_equal(track.items[2].pos, 40)
+                assert_equal(track.items[2].len, 44)
+                assert_equal(track.items[2].pos - track.items[1].pos, 32)
+            end)
         end,
     },
     {
