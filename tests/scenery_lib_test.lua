@@ -214,6 +214,115 @@ local tests = {
         end,
     },
     {
+        name = "record back-fill tiles a mid-scene loop to the scene start",
+        run = function()
+            local fake = make_state_fake()
+            fake.values[scenery.EXT_SECTION .. ":record_backfill"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":switch_wait_bars"] = "4"
+            local fail_split_at = nil
+            local track = { items = {} }
+            local item = { guid = "{recorded}", pos = 12, len = 20 }
+            track.items[1] = item
+            fake.CountTracks = function() return 1 end
+            fake.GetTrack = function() return track end
+            fake.CountTrackMediaItems = function(target) return #target.items end
+            fake.GetTrackMediaItem = function(target, index) return target.items[index + 1] end
+            fake.GetSetMediaItemInfo_String = function(target, key)
+                if key == "GUID" then return true, target.guid end
+            end
+            fake.GetMediaItemInfo_Value = function(target, key)
+                if key == "D_POSITION" then return target.pos end
+                if key == "D_LENGTH" then return target.len end
+            end
+            fake.TimeMap2_timeToBeats = function(_, time)
+                return 0, math.floor(time / 4), 0, time, 0
+            end
+            fake.TimeMap2_beatsToTime = function(_, _, measure) return measure * 4 end
+            fake.TimeMap2_timeToQN = function(_, time) return time end
+            fake.TimeMap2_QNToTime = function(_, quarter_note) return quarter_note end
+            fake.GetItemStateChunk = function(target)
+                return true, string.format("ITEM\nPOSITION %.17g\nLENGTH %.17g\n", target.pos, target.len)
+            end
+            fake.AddMediaItemToTrack = function(target)
+                local tile = { pos = 0, len = 20, chunk = "" }
+                target.items[#target.items + 1] = tile
+                return tile
+            end
+            fake.SplitMediaItem = function(target, split_pos)
+                if fail_split_at == split_pos then return nil end
+                local right = {
+                    pos = split_pos,
+                    len = target.pos + target.len - split_pos,
+                }
+                target.len = split_pos - target.pos
+                track.items[#track.items + 1] = right
+                return right
+            end
+            fake.DeleteTrackMediaItem = function(target, item_to_delete)
+                for index, candidate in ipairs(target.items) do
+                    if candidate == item_to_delete then
+                        table.remove(target.items, index)
+                        return
+                    end
+                end
+            end
+            fake.SetItemStateChunk = function(target, chunk)
+                target.pos = tonumber(chunk:match("POSITION ([^\n]+)")) or target.pos
+                target.len = tonumber(chunk:match("LENGTH ([^\n]+)")) or target.len
+                return true
+            end
+            fake.SetMediaItemInfo_Value = function(target, key, value)
+                if key == "D_POSITION" then target.pos = value end
+            end
+            fake.GetActiveTake = function() return nil end
+            fake.SetMediaItemLength = function(target, length) target.len = length end
+            fake.UpdateItemInProject = function() end
+
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(track.items[2].pos, 0)
+                assert_equal(track.items[2].len, 16)
+                assert_equal(track.items[3].pos, 28)
+                assert_equal(track.items[4].pos, 44)
+
+                track.items = { item }
+                fail_split_at = 4
+                processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 4,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(track.items[2].pos, 0)
+                assert_equal(track.items[2].len, 16)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "0"
+            track.items = { item }
+            item.pos = 16
+            item.len = 16
+            fail_split_at = nil
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(track.items[2].pos, 0)
+                assert_equal(track.items[2].len, 16)
+            end)
+        end,
+    },
+    {
         name = "full-scene MIDI recording activates the take before the final take",
         run = function()
             local fake = make_state_fake()

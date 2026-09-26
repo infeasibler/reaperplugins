@@ -26,6 +26,7 @@ function M.get_config()
         color_r             = tonumber(r), color_g = tonumber(g), color_b = tonumber(b),
         follow_enabled      = ext_get("follow_enabled", "1") == "1",
         record_auto_loop    = ext_get("record_auto_loop", "1") == "1",
+        record_backfill     = ext_get("record_backfill", "0") == "1",
         record_lead_in      = ext_get("record_lead_in", "0") == "1",
         record_lead_out     = ext_get("record_lead_out", "0") == "1",
         record_end_of_bar   = ext_get("record_end_of_bar", "1") == "1",
@@ -765,6 +766,66 @@ local function phrase_start_for_recording(pos, scene, phrase_bars)
     return math.max(scene.pos, phrase_start)
 end
 
+local function create_phrase_item(track, item, phrase_start, phrase_end)
+    local chunk = source_chunk(item, false)
+    if not chunk then return nil end
+
+    local phrase_item = reaper.AddMediaItemToTrack(track)
+    if not reaper.SetItemStateChunk(phrase_item, chunk, false) then
+        reaper.DeleteTrackMediaItem(track, phrase_item)
+        return nil
+    end
+
+    local item_pos = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
+    if item_pos < phrase_start - 1e-9 then
+        local right = reaper.SplitMediaItem(phrase_item, phrase_start)
+        if not right then
+            reaper.DeleteTrackMediaItem(track, phrase_item)
+            return nil
+        end
+        reaper.DeleteTrackMediaItem(track, phrase_item)
+        phrase_item = right
+    elseif item_pos > phrase_start + 1e-9 then
+        reaper.DeleteTrackMediaItem(track, phrase_item)
+        return nil
+    end
+
+    local item_end = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
+        + reaper.GetMediaItemInfo_Value(phrase_item, "D_LENGTH")
+    if item_end > phrase_end + 1e-9 then
+        local right = reaper.SplitMediaItem(phrase_item, phrase_end)
+        if not right then
+            reaper.DeleteTrackMediaItem(track, phrase_item)
+            return nil
+        end
+        reaper.DeleteTrackMediaItem(track, right)
+    end
+    return phrase_item
+end
+
+local function backfill_loop_source(track, item, scene, phrase_start, phrase_end)
+    if phrase_start <= scene.pos + 1e-9 then return end
+    local unit = phrase_end - phrase_start
+    local phrase_item = create_phrase_item(track, item, phrase_start, phrase_end)
+    if not phrase_item then return end
+
+    local dest = phrase_start
+    while dest > scene.pos + 1e-9 do
+        local chunk = linked_chunk(phrase_item)
+        if not chunk then break end
+        local tile_start = dest - unit
+        local tile = reaper.AddMediaItemToTrack(track)
+        reaper.SetItemStateChunk(tile, chunk, false)
+        reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_start)
+        if tile_start < scene.pos - 1e-9 then
+            local right = reaper.SplitMediaItem(tile, scene.pos)
+            if right then reaper.DeleteTrackMediaItem(track, tile) end
+        end
+        dest = math.max(scene.pos, dest - unit)
+    end
+    reaper.DeleteTrackMediaItem(track, phrase_item)
+end
+
 local function apply_phrase_recording(track, item, pos, scene, cfg)
     local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
     local phrase_bars = math.max(1, cfg.switch_wait_bars)
@@ -828,6 +889,9 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
 
     local lead_in = cfg.record_lead_in and math.max(0, phrase_start - pos) or 0
     local unit = phrase_end - phrase_start
+    if cfg.record_backfill then
+        backfill_loop_source(track, item, scene, phrase_start, phrase_end)
+    end
     local dest_anchor = phrase_end
     local phrase_items = { item }
     while dest_anchor < scene.rgnend - 1e-9 do
@@ -983,6 +1047,10 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
             reaper.UpdateItemInProject(item)
 
             local unit = snapped_end - snapped_pos
+            if cfg.record_backfill and snapped_pos > scene.pos + 1e-9 then
+                backfill_loop_source(track, item, scene, snapped_pos, snapped_end)
+            end
+
             local dest = snapped_end
             while dest < scene.rgnend - 1e-9 do
                 local chunk = linked_chunk(item)

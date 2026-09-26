@@ -11,6 +11,7 @@ local defaults = table.concat({
     string.format("%d,%d,%d", cfg.color_r, cfg.color_g, cfg.color_b),
     cfg.follow_enabled and "1" or "0",
     cfg.record_auto_loop and "1" or "0",
+    cfg.record_backfill and "1" or "0",
     cfg.record_lead_in and "1" or "0",
     cfg.record_lead_out and "1" or "0",
     cfg.record_end_of_bar and "1" or "0",
@@ -22,17 +23,17 @@ local defaults = table.concat({
 }, ",")
 
 local ok, input = reaper.GetUserInputs(
-    "Scenery - Settings", 12,
+    "Scenery - Settings", 13,
     "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,Record auto-loop (1/0):," ..
-    "Record lead-in (1/0):,Record lead-out (1/0):,Record to end of phrase (1/0):,Wait for scene end when launching (1/0):,Phrase length (bars; ignored " ..
+    "Back-fill auto-loops (1/0):,Record lead-in (1/0):,Record lead-out (1/0):,Record to end of phrase (1/0):,Wait for scene end when launching (1/0):,Phrase length (bars; ignored " ..
     "if waiting for scene end):,Skip occupied tracks when copying (1/0):," ..
     "Auto repeat on scene start (1/0):,Insert copies after current scene (1/0):,extrawidth=60",
     defaults)
 if not ok then return end
 
-local bars, r, g, b, follow, record_auto_loop, record_lead_in, record_lead_out, record_end_of_bar, wait_for_scene_end, switch_wait_bars,
+local bars, r, g, b, follow, record_auto_loop, record_backfill, record_lead_in, record_lead_out, record_end_of_bar, wait_for_scene_end, switch_wait_bars,
 skip_occupied_tracks, auto_repeat, insert_after_current =
-    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
+    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
 if not bars then
     reaper.MB("Could not parse the settings. Colour must be three numbers, e.g. 48,128,192.", "Scenery", 0)
     return
@@ -54,6 +55,7 @@ L.set_config("default_bars", bar_count)
 L.set_config("region_color", string.format("%d,%d,%d", clamp_channel(r), clamp_channel(g), clamp_channel(b)))
 L.set_config("follow_enabled", follow:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_auto_loop", record_auto_loop:match("^%s*1%s*$") and "1" or "0")
+L.set_config("record_backfill", record_backfill:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_lead_in", record_lead_in:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_lead_out", record_lead_out:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_end_of_bar", record_end_of_bar:match("^%s*1%s*$") and "1" or "0")

@@ -39,7 +39,7 @@
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
 local L = dofile(script_dir .. "scenery_lib.lua")
 
-local WINDOW = { title = "Scenery", w = 260, h = 578 }
+local WINDOW = { title = "Scenery", w = 260, h = 604 }
 local SCALE = { min = 0.75, max = 1.5, step = 0.1, value = 1 }
 local ROW = { h = 26, gap = 4 }
 local PAD = 8
@@ -348,29 +348,34 @@ local function draw_settings(y, cfg)
         L.set_config("record_auto_loop", cfg.record_auto_loop and "0" or "1")
     end
 
+    local backfill_label = (cfg.record_backfill and "[x] " or "[ ] ") .. "Back-fill auto-loops"
+    if button(PAD, y + (step + ROW.gap) * 5, w, step, backfill_label) then
+        L.set_config("record_backfill", cfg.record_backfill and "0" or "1")
+    end
+
     local end_of_bar_label = (cfg.record_end_of_bar and "[x] " or "[ ] ") .. "Record to end of phrase"
-    if button(PAD, y + (step + ROW.gap) * 5, w, step, end_of_bar_label) then
+    if button(PAD, y + (step + ROW.gap) * 6, w, step, end_of_bar_label) then
         L.set_config("record_end_of_bar", cfg.record_end_of_bar and "0" or "1")
     end
 
     local lead_in_label = (cfg.record_lead_in and "[x] " or "[ ] ") .. "Record lead-in"
-    if button(PAD, y + (step + ROW.gap) * 6, w, step, lead_in_label) then
+    if button(PAD, y + (step + ROW.gap) * 7, w, step, lead_in_label) then
         L.set_config("record_lead_in", cfg.record_lead_in and "0" or "1")
     end
 
     local lead_out_label = (cfg.record_lead_out and "[x] " or "[ ] ") .. "Record lead-out"
-    if button(PAD, y + (step + ROW.gap) * 7, w, step, lead_out_label) then
+    if button(PAD, y + (step + ROW.gap) * 8, w, step, lead_out_label) then
         L.set_config("record_lead_out", cfg.record_lead_out and "0" or "1")
     end
 
     local wait_label = (cfg.wait_for_scene_end and "[x] " or "[ ] ") .. "Wait for scene end when launching"
-    if button(PAD, y + (step + ROW.gap) * 8, w, step, wait_label) then
+    if button(PAD, y + (step + ROW.gap) * 9, w, step, wait_label) then
         L.set_config("wait_for_scene_end", cfg.wait_for_scene_end and "0" or "1")
     end
 
     -- only meaningful when not already waiting for the scene to end, so greyed out then
     local wait_bars_disabled = cfg.wait_for_scene_end
-    local wait_bars_y = y + (step + ROW.gap) * 9
+    local wait_bars_y = y + (step + ROW.gap) * 10
     draw_label("Phrase length", PAD, wait_bars_y, w - 84, step, COLOR.dim)
     if button(logical_width() - PAD - 78, wait_bars_y, 22, step, "-", nil, wait_bars_disabled)
         and cfg.switch_wait_bars > 0 then
@@ -389,16 +394,16 @@ local function draw_settings(y, cfg)
     end
 
     local auto_repeat_label = (cfg.auto_repeat and "[x] " or "[ ] ") .. "Auto repeat on scene start"
-    if button(PAD, y + (step + ROW.gap) * 10, w, step, auto_repeat_label) then
+    if button(PAD, y + (step + ROW.gap) * 11, w, step, auto_repeat_label) then
         L.set_config("auto_repeat", cfg.auto_repeat and "0" or "1")
     end
 
     local insert_label = (cfg.insert_after_current and "[x] " or "[ ] ") .. "Insert copies after current scene"
-    if button(PAD, y + (step + ROW.gap) * 11, w, step, insert_label) then
+    if button(PAD, y + (step + ROW.gap) * 12, w, step, insert_label) then
         L.set_config("insert_after_current", cfg.insert_after_current and "0" or "1")
     end
 
-    local scale_y = y + (step + ROW.gap) * 12
+    local scale_y = y + (step + ROW.gap) * 13
     draw_label("Launcher scale", PAD, scale_y, w - 84, step, COLOR.dim)
     if button(logical_width() - PAD - 78, scale_y, 22, step, "-", nil,
         SCALE.value <= SCALE.min) then
@@ -416,7 +421,7 @@ end
 local function draw_footer(scenes, cfg)
     local w = logical_width() - PAD * 2
     local top = logical_height() - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) -
-        (22 + ROW.gap) * 10 - (24 + ROW.gap) * 3 - (22 + ROW.gap) - (22 + ROW.gap)
+        (22 + ROW.gap) * 11 - (24 + ROW.gap) * 3 - (22 + ROW.gap) - (22 + ROW.gap)
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end
