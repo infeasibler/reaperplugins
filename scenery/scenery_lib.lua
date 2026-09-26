@@ -838,6 +838,71 @@ end
 -- unit follows the take's own extents, not D_LENGTH.
 local linked_chunk
 
+local function midi_notes_crossing_boundary(item, boundary)
+    local take = reaper.GetActiveTake(item)
+    if not take or not reaper.TakeIsMIDI(take) then return {} end
+
+    local boundary_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, boundary)
+    local _, note_count = reaper.MIDI_CountEvts(take)
+    local notes = {}
+    for note_index = 0, note_count - 1 do
+        local ok, selected, muted, start_ppq, end_ppq, channel, pitch, velocity =
+            reaper.MIDI_GetNote(take, note_index)
+        if ok and start_ppq < boundary_ppq - 1e-6 and end_ppq >= boundary_ppq - 1e-6 then
+            local remaining_ppq = end_ppq > boundary_ppq + 1e-6
+                and end_ppq - boundary_ppq
+                or end_ppq - start_ppq
+            notes[#notes + 1] = {
+                selected = selected,
+                muted = muted,
+                remaining_ppq = remaining_ppq,
+                channel = channel,
+                pitch = pitch,
+                velocity = velocity,
+            }
+        end
+    end
+    return notes
+end
+
+local function apply_midi_boundary_notes(notes, item, phrase_start)
+    if #notes == 0 then return end
+    local take = reaper.GetActiveTake(item)
+    if not take or not reaper.TakeIsMIDI(take) then return end
+
+    local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, phrase_start)
+    local changed = false
+    for _, note in ipairs(notes) do
+        local end_ppq = start_ppq + note.remaining_ppq
+        local _, note_count = reaper.MIDI_CountEvts(take)
+        local matching_index
+        local matching_end
+        for note_index = 0, note_count - 1 do
+            local ok, _, _, existing_start, existing_end, channel, pitch =
+                reaper.MIDI_GetNote(take, note_index)
+            if ok and math.abs(existing_start - start_ppq) <= 1
+                and channel == note.channel and pitch == note.pitch then
+                matching_index = note_index
+                matching_end = existing_end
+                break
+            end
+        end
+
+        if matching_index then
+            if matching_end < end_ppq - 1e-6 then
+                reaper.MIDI_SetNote(take, matching_index, nil, nil, nil, end_ppq,
+                    nil, nil, nil, true)
+                changed = true
+            end
+        else
+            reaper.MIDI_InsertNote(take, note.selected, note.muted, start_ppq, end_ppq,
+                note.channel, note.pitch, note.velocity, true)
+            changed = true
+        end
+    end
+    if changed then reaper.MIDI_Sort(take) end
+end
+
 local function remove_midi_notes_starting_at_or_after(take, end_time)
     local _, note_count = reaper.MIDI_CountEvts(take)
     local note_indices = {}
@@ -853,8 +918,8 @@ local function remove_midi_notes_starting_at_or_after(take, end_time)
     if #note_indices > 0 then reaper.MIDI_Sort(take) end
 end
 
-local function glue_midi_phrase_items(items)
-    if #items < 2 then return end
+local function glue_phrase_items(items)
+    if #items < 2 then return items[1] end
 
     local selected_before, item_lookup = {}, {}
     for i = 0, reaper.CountMediaItems(0) - 1 do
@@ -890,6 +955,7 @@ local function glue_midi_phrase_items(items)
             end
         end
     end
+    return outputs[1]
 end
 
 local function phrase_start_for_recording(pos, scene, phrase_bars)
@@ -973,6 +1039,35 @@ end
 
 local function apply_phrase_recording(track, item, pos, scene, cfg)
     local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+    if pos > scene.pos + 1e-9 and pos < scene.rgnend - 1e-9
+        and recorded_end > scene.rgnend + 1e-9 then
+        local boundary_notes = cfg.record_lead_in and {}
+            or midi_notes_crossing_boundary(item, scene.rgnend)
+        local right = reaper.SplitMediaItem(item, scene.rgnend)
+        if not right then return false end
+        if cfg.record_lead_in then
+            local lead_in = scene.rgnend - pos
+            reaper.SetMediaItemInfo_Value(item, "D_POSITION", scene.pos - lead_in)
+            reaper.SetMediaItemInfo_Value(right, "D_POSITION", scene.pos)
+            local left = item
+            item = glue_phrase_items({ left, right })
+            if not item then
+                reaper.SetMediaItemInfo_Value(left, "D_POSITION", pos)
+                reaper.SetMediaItemInfo_Value(right, "D_POSITION", scene.rgnend)
+                return false
+            end
+            pos = scene.pos - lead_in
+        else
+            reaper.DeleteTrackMediaItem(track, item)
+            item = right
+            pos = scene.pos
+            reaper.SetMediaItemInfo_Value(item, "D_POSITION", pos)
+            apply_midi_boundary_notes(boundary_notes, item, scene.pos)
+        end
+        reaper.SetMediaItemInfo_Value(item, "D_POSITION", pos)
+        recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+    end
+
     local phrase_bars = math.max(1, cfg.switch_wait_bars)
     local phrase_start = phrase_start_for_recording(pos, scene, phrase_bars)
     local phrase_end = M.bars_to_time(phrase_start, phrase_bars)
@@ -1058,7 +1153,7 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         dest_anchor = dest_anchor + unit
     end
     if cfg.record_lead_out and is_midi then
-        glue_midi_phrase_items(phrase_items)
+        glue_phrase_items(phrase_items)
     end
     return true
 end
@@ -1125,8 +1220,54 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
         end
     end
 
-    local processed = 0
+    local skipped_targets = {}
+    local process_recordings = cfg.record_auto_loop or cfg.record_backfill
+        or cfg.record_lead_in or cfg.record_lead_out
+    for _, tail in ipairs(targets) do
+        local tail_end = tail.pos + reaper.GetMediaItemInfo_Value(tail.item, "D_LENGTH")
+        if process_recordings and tail.pos > scene.pos + 1e-9 and tail.pos < scene.rgnend - 1e-9
+            and math.abs(tail_end - scene.rgnend) <= 0.2 then
+            local body
+            for _, candidate in ipairs(targets) do
+                if candidate ~= tail and candidate.track == tail.track
+                    and math.abs(candidate.pos - scene.pos) <= 0.2 then
+                    body = candidate
+                    break
+                end
+            end
+            if body then
+                if cfg.record_lead_in then
+                    local lead_in = reaper.GetMediaItemInfo_Value(tail.item, "D_LENGTH")
+                    reaper.SetMediaItemInfo_Value(tail.item, "D_POSITION", scene.pos - lead_in)
+                    reaper.SetMediaItemInfo_Value(body.item, "D_POSITION", scene.pos)
+                    local combined = glue_phrase_items({ tail.item, body.item })
+                    if combined then
+                        body.item = combined
+                        body.pos = scene.pos - lead_in
+                        skipped_targets[tail] = true
+                    else
+                        reaper.SetMediaItemInfo_Value(tail.item, "D_POSITION", tail.pos)
+                        reaper.SetMediaItemInfo_Value(body.item, "D_POSITION", body.pos)
+                    end
+                else
+                    local boundary_notes = midi_notes_crossing_boundary(tail.item, scene.rgnend)
+                    apply_midi_boundary_notes(boundary_notes, body.item, scene.pos)
+                    reaper.DeleteTrackMediaItem(tail.track, tail.item)
+                    skipped_targets[tail] = true
+                end
+            end
+        end
+    end
+
+    local process_targets = {}
     for _, target in ipairs(targets) do
+        if not skipped_targets[target] then
+            process_targets[#process_targets + 1] = target
+        end
+    end
+
+    local processed = 0
+    for _, target in ipairs(process_targets) do
         local track, item, pos = target.track, target.item, target.pos
         local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
         if activate_previous_full_scene_take(item, pos, recorded_end, scene) then

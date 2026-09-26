@@ -440,7 +440,16 @@ local tests = {
             fake.TimeMap2_timeToQN = function(_, time) return time end
             fake.TimeMap2_QNToTime = function(_, quarter_note) return quarter_note end
             fake.GetItemStateChunk = function(target)
-                return true, string.format("ITEM\nPOSITION %.17g\nLENGTH %.17g\n", target.pos, target.len)
+                local chunk = string.format("ITEM\nPOSITION %.17g\nLENGTH %.17g\n", target.pos, target.len)
+                if target.take and target.take.is_midi then
+                    chunk = chunk .. "MIDI 1\n"
+                    for _, note in ipairs(target.take.notes or {}) do
+                        chunk = chunk .. string.format("NOTE %d %d %.17g %.17g %d %d %d\n",
+                            note.selected and 1 or 0, note.muted and 1 or 0,
+                            note.start_ppq, note.end_ppq, note.channel, note.pitch, note.velocity)
+                    end
+                end
+                return true, chunk
             end
             fake.AddMediaItemToTrack = function(target)
                 local tile = { pos = 0, len = 20, chunk = "" }
@@ -468,14 +477,72 @@ local tests = {
             fake.SetItemStateChunk = function(target, chunk)
                 target.pos = tonumber(chunk:match("POSITION ([^\n]+)")) or target.pos
                 target.len = tonumber(chunk:match("LENGTH ([^\n]+)")) or target.len
+                if chunk:match("\nMIDI 1\n") then
+                    target.take = { is_midi = true, notes = {} }
+                    target.take.item = target
+                    for note_data in chunk:gmatch("NOTE ([^\n]+)") do
+                        local selected, muted, start_ppq, end_ppq, channel, pitch, velocity =
+                            note_data:match("^(%d+) (%d+) (%S+) (%S+) (%d+) (%d+) (%d+)$")
+                        target.take.notes[#target.take.notes + 1] = {
+                            selected = selected == "1",
+                            muted = muted == "1",
+                            start_ppq = tonumber(start_ppq),
+                            end_ppq = tonumber(end_ppq),
+                            channel = tonumber(channel),
+                            pitch = tonumber(pitch),
+                            velocity = tonumber(velocity),
+                        }
+                    end
+                end
                 return true
             end
             fake.SetMediaItemInfo_Value = function(target, key, value)
                 if key == "D_POSITION" then target.pos = value end
             end
-            fake.GetActiveTake = function() return nil end
+            fake.GetActiveTake = function(target) return target.take end
             fake.SetMediaItemLength = function(target, length) target.len = length end
             fake.UpdateItemInProject = function() end
+            fake.CountMediaItems = function() return #track.items end
+            fake.GetMediaItem = function(_, index) return track.items[index + 1] end
+            fake.IsMediaItemSelected = function(target) return target.selected == true end
+            fake.SelectAllMediaItems = function(_, selected)
+                for _, candidate in ipairs(track.items) do candidate.selected = selected end
+            end
+            fake.SetMediaItemSelected = function(target, selected) target.selected = selected end
+            fake.CountSelectedMediaItems = function()
+                local count = 0
+                for _, candidate in ipairs(track.items) do
+                    if candidate.selected then count = count + 1 end
+                end
+                return count
+            end
+            fake.GetSelectedMediaItem = function(_, index)
+                local selected = {}
+                for _, candidate in ipairs(track.items) do
+                    if candidate.selected then selected[#selected + 1] = candidate end
+                end
+                return selected[index + 1]
+            end
+            local perform_glue = true
+            fake.Main_OnCommand = function(command_id)
+                assert_equal(command_id, 40362)
+                if not perform_glue then return end
+                local start_pos, end_pos = math.huge, -math.huge
+                for _, candidate in ipairs(track.items) do
+                    if candidate.selected then
+                        start_pos = math.min(start_pos, candidate.pos)
+                        end_pos = math.max(end_pos, candidate.pos + candidate.len)
+                    end
+                end
+                for index = #track.items, 1, -1 do
+                    if track.items[index].selected then table.remove(track.items, index) end
+                end
+                track.items[#track.items + 1] = {
+                    pos = start_pos,
+                    len = end_pos - start_pos,
+                    selected = true,
+                }
+            end
 
             with_fake_reaper(fake, function()
                 local processed = scenery.apply_loop_source_to_new_items({}, {
@@ -534,6 +601,86 @@ local tests = {
                 assert_equal(track.items[3].pos, 48)
             end)
 
+            fake.values[scenery.EXT_SECTION .. ":record_auto_loop"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":record_end_of_bar"] = "0"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
+            local wrapped_recording = { guid = "{wrapped-recording}", pos = 60, len = 20 }
+            track.items = { wrapped_recording }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(track.items[1].pos, 0)
+                assert_equal(track.items[1].len, 16)
+                assert_equal(track.items[2].pos, 16)
+                assert_equal(track.items[3].pos, 32)
+                assert_equal(track.items[4].pos, 48)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "1"
+            wrapped_recording = { guid = "{wrapped-recording-lead-in}", pos = 60, len = 20 }
+            track.items = { wrapped_recording }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(track.items[1].pos, -4)
+                assert_equal(track.items[1].len, 20)
+                assert_equal(track.items[1].pos + 4, 0)
+                assert_equal(track.items[2].pos, 12)
+                assert_equal(track.items[2].pos + 4, 16)
+                assert_equal(track.items[3].pos, 28)
+                assert_equal(track.items[3].pos + 4, 32)
+                assert_equal(track.items[4].pos, 44)
+                assert_equal(track.items[4].pos + 4, 48)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
+            local wrapped_body = { guid = "{wrapped-body}", pos = 0, len = 16 }
+            local wrapped_tail = { guid = "{wrapped-tail}", pos = 60, len = 4 }
+            track.items = { wrapped_body, wrapped_tail }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(track.items[1].pos, 0)
+                assert_equal(track.items[1].len, 16)
+                assert_equal(track.items[2].pos, 16)
+                assert_equal(track.items[3].pos, 32)
+                assert_equal(track.items[4].pos, 48)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "1"
+            wrapped_body = { guid = "{wrapped-body-lead-in}", pos = 0, len = 16 }
+            wrapped_tail = { guid = "{wrapped-tail-lead-in}", pos = 60, len = 4 }
+            track.items = { wrapped_body, wrapped_tail }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(track.items[1].pos, -4)
+                assert_equal(track.items[1].len, 20)
+                assert_equal(track.items[1].pos + 4, 0)
+                assert_equal(track.items[2].pos, 12)
+                assert_equal(track.items[2].pos + 4, 16)
+                assert_equal(track.items[3].pos, 28)
+                assert_equal(track.items[3].pos + 4, 32)
+                assert_equal(track.items[4].pos, 44)
+                assert_equal(track.items[4].pos + 4, 48)
+            end)
+
             fake.values[scenery.EXT_SECTION .. ":record_end_of_bar"] = "1"
             local long_recording = { guid = "{long-recording}", pos = 0, len = 32 }
             track.items = { long_recording }
@@ -559,33 +706,42 @@ local tests = {
                 take = { is_midi = true },
             }
             track.items = { leadout_recording }
-            fake.GetActiveTake = function(target) return target.take end
+            perform_glue = false
             fake.TakeIsMIDI = function(take) return take and take.is_midi end
-            fake.MIDI_CountEvts = function() return true, 0, 0, 0 end
+            fake.MIDI_CountEvts = function(take) return true, #(take.notes or {}), 0, 0 end
+            fake.MIDI_GetNote = function(take, index)
+                local note = take.notes[index + 1]
+                if not note then return false end
+                return true, note.selected, note.muted, note.start_ppq, note.end_ppq,
+                    note.channel, note.pitch, note.velocity
+            end
+            fake.MIDI_GetPPQPosFromProjTime = function(take, time)
+                return (time - take.item.pos) * 100
+            end
+            fake.MIDI_InsertNote = function(take, selected, muted, start_ppq, end_ppq,
+                channel, pitch, velocity)
+                take.notes[#take.notes + 1] = {
+                    selected = selected,
+                    muted = muted,
+                    start_ppq = start_ppq,
+                    end_ppq = end_ppq,
+                    channel = channel,
+                    pitch = pitch,
+                    velocity = velocity,
+                }
+                return true
+            end
+            fake.MIDI_SetNote = function(take, index, _, _, _, end_ppq)
+                take.notes[index + 1].end_ppq = end_ppq
+                return true
+            end
+            fake.MIDI_Sort = function(take)
+                table.sort(take.notes, function(left, right)
+                    return left.start_ppq < right.start_ppq
+                end)
+            end
             fake.MIDI_SetItemExtents = function(target, start_qn, end_qn)
                 target.len = end_qn - start_qn
-            end
-            fake.CountMediaItems = function() return #track.items end
-            fake.GetMediaItem = function(_, index) return track.items[index + 1] end
-            fake.IsMediaItemSelected = function(target) return target.selected == true end
-            fake.SelectAllMediaItems = function(_, selected)
-                for _, candidate in ipairs(track.items) do candidate.selected = selected end
-            end
-            fake.SetMediaItemSelected = function(target, selected) target.selected = selected end
-            fake.Main_OnCommand = function(command_id) assert_equal(command_id, 40362) end
-            fake.CountSelectedMediaItems = function()
-                local count = 0
-                for _, candidate in ipairs(track.items) do
-                    if candidate.selected then count = count + 1 end
-                end
-                return count
-            end
-            fake.GetSelectedMediaItem = function(_, index)
-                local selected = {}
-                for _, candidate in ipairs(track.items) do
-                    if candidate.selected then selected[#selected + 1] = candidate end
-                end
-                return selected[index + 1]
             end
             fake.ValidatePtr2 = function() return true end
             with_fake_reaper(fake, function()
@@ -600,6 +756,42 @@ local tests = {
                 assert_equal(track.items[2].pos, 40)
                 assert_equal(track.items[2].len, 44)
                 assert_equal(track.items[2].pos - track.items[1].pos, 32)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "0"
+            fake.values[scenery.EXT_SECTION .. ":record_end_of_bar"] = "0"
+            local body_take = { is_midi = true, notes = {} }
+            local midi_body = { guid = "{midi-body}", pos = 0, len = 16, take = body_take }
+            body_take.item = midi_body
+            local tail_take = {
+                is_midi = true,
+                notes = {
+                    { selected = false, muted = false, start_ppq = 200, end_ppq = 400,
+                        channel = 0, pitch = 60, velocity = 100 },
+                    { selected = false, muted = false, start_ppq = 100, end_ppq = 300,
+                        channel = 0, pitch = 62, velocity = 100 },
+                },
+            }
+            local midi_tail = { guid = "{midi-tail}", pos = 60, len = 4, take = tail_take }
+            tail_take.item = midi_tail
+            track.items = { midi_body, midi_tail }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(#midi_body.take.notes, 1)
+                assert_equal(midi_body.take.notes[1].start_ppq, 0)
+                assert_equal(midi_body.take.notes[1].end_ppq, 200)
+                assert_equal(midi_body.take.notes[1].pitch, 60)
+                for index = 2, 4 do
+                    assert_equal(#track.items[index].take.notes, 1)
+                    assert_equal(track.items[index].take.notes[1].start_ppq, 0)
+                    assert_equal(track.items[index].take.notes[1].end_ppq, 200)
+                end
             end)
         end,
     },
