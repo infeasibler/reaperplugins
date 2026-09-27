@@ -6,12 +6,11 @@
 				<description><![CDATA[Scene-based looping toolkit for REAPER with a launcher panel, scene actions, a follow-along engine, and bar-quantized recording.]]></description>
 				<link rel="website">https://github.com/infeasibler/reaperplugins</link>
 			</metadata>
-			<version name="0.3.9" author="infeasibler" time="2026-09-26T00:00:00Z">
-				<changelog><![CDATA[- Fixed auto-loop phrase processing when lead-in and lead-out are disabled.
-- Fixed back-fill to preserve an already aligned source phrase and align phrase starts correctly.
-- Fixed repeat interval calculation so recorded lead-out is excluded from the repeated phrase.
-- Fixed wraparound recordings to discard the end tail when lead-in is off or retain it as a bar-1-aligned pickup when enabled.
-- Restarted MIDI notes clipped at the loop boundary at the beginning of the repeated phrase.]]></changelog>
+			<version name="0.4.0" author="infeasibler" time="2026-09-27T00:00:00Z">
+				<changelog><![CDATA[- Made recording lead-out duration configurable and corrected full-scene lead-out handling.
+- Fixed full-scene audio recordings to activate the intended take.
+- Preserved MIDI notes across loop wraps and phrase boundaries, including repairs to populated takes.
+- Hardened phrase glue processing against invalidated media-item handles.]]></changelog>
 				<source main="main" type="script" file="Scenery - Launcher.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Launcher.lua</source>
 				<source main="main" type="script" file="Scenery - New scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene.lua</source>
 				<source main="main" type="script" file="Scenery - New scene (custom bars).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene%20(custom%20bars).lua</source>
