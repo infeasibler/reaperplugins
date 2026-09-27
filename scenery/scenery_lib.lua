@@ -472,8 +472,14 @@ end
 -- Keep recording through the phrase boundary, with one extra bar only when
 -- lead-out is enabled; the engine's poll loop watches for this and stops.
 function M.request_quantized_stop(phrase_bars, lead_out)
-    local measure = M.measure_at(M.cursor_position())
+    local position = M.cursor_position()
+    local measure = M.measure_at(position)
     local phrase_end_measure = next_phrase_end_measure(measure, phrase_bars)
+    local measure_start = M.measure_start_time(measure)
+    if measure % math.max(1, math.floor(tonumber(phrase_bars) or 1)) == 0
+        and position - measure_start <= 0.2 then
+        phrase_end_measure = measure
+    end
     local target_measure = phrase_end_measure + (lead_out and 1 or 0)
     local target = M.measure_start_time(target_measure) + 0.02
     reaper.SetExtState(M.EXT_SECTION, "pending_record_stop", tostring(target), false)
@@ -1096,12 +1102,14 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     if phrase_end <= phrase_start + 1e-9 then return false end
 
     if not cfg.record_lead_in and pos < phrase_start - 1e-9 then
+        local boundary_notes = midi_notes_crossing_boundary(item, phrase_start)
         local right = reaper.SplitMediaItem(item, phrase_start)
         if not right then return false end
         reaper.DeleteTrackMediaItem(track, item)
         item = right
         pos = phrase_start
         recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        apply_midi_boundary_notes(boundary_notes, item, phrase_start)
     end
 
     if not cfg.record_lead_out and recorded_end > phrase_end + 1e-9 then
@@ -1128,10 +1136,14 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         if cfg.record_lead_out then
             remove_midi_notes_starting_at_or_after(take, phrase_end)
         end
-        local start_qn = reaper.TimeMap2_timeToQN(0, pos)
-        local end_qn = reaper.TimeMap2_timeToQN(0, desired_end)
         reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
-        reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
+        local item_end = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        if math.abs(item_end - desired_end) > 1e-9 then
+            local start_qn = reaper.TimeMap2_timeToQN(0, pos)
+            local end_qn = reaper.TimeMap2_timeToQN(0, desired_end)
+            reaper.MIDI_SetItemExtents(item, start_qn, end_qn)
+        end
     else
         reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
         reaper.SetMediaItemLength(item, desired_end - pos, true)
@@ -1214,6 +1226,13 @@ local function activate_previous_full_scene_take(item, pos, recorded_end, scene)
     return false
 end
 
+local function has_midi_events(item)
+    local take = reaper.GetActiveTake(item)
+    if not take or not reaper.TakeIsMIDI(take) then return false end
+    local _, notes, cc, text = reaper.MIDI_CountEvts(take)
+    return (notes or 0) + (cc or 0) + (text or 0) > 0
+end
+
 function M.apply_loop_source_to_new_items(existing_guids, scene)
     if not existing_guids or not scene then return 0 end
     local cfg = M.get_config()
@@ -1236,6 +1255,7 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
     end
 
     local skipped_targets = {}
+    local empty_wrap_bodies = {}
     local process_recordings = cfg.record_auto_loop or cfg.record_backfill
         or cfg.record_lead_in or cfg.record_lead_out
     for _, tail in ipairs(targets) do
@@ -1249,6 +1269,14 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
                     body = candidate
                     break
                 end
+            end
+            local body_take = body and reaper.GetActiveTake(body.item)
+            if body_take and reaper.TakeIsMIDI(body_take) and not cfg.record_lead_in
+                and reaper.GetMediaItemInfo_Value(body.item, "D_LENGTH") <= 0.2
+                and not has_midi_events(body.item) and has_midi_events(tail.item) then
+                skipped_targets[body] = true
+                empty_wrap_bodies[#empty_wrap_bodies + 1] = body
+                body = nil
             end
             if body then
                 if cfg.record_lead_in then
@@ -1272,6 +1300,9 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
                 end
             end
         end
+    end
+    for _, body in ipairs(empty_wrap_bodies) do
+        reaper.DeleteTrackMediaItem(body.track, body.item)
     end
 
     local process_targets = {}

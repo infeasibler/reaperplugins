@@ -224,7 +224,8 @@ local tests = {
         run = function()
             local fake = make_state_fake()
             fake.GetPlayState = function() return 4 end
-            fake.GetCursorPosition = function() return 4 end
+            fake.cursor_position = 4
+            fake.GetCursorPosition = function() return fake.cursor_position end
             fake.values[scenery.EXT_SECTION .. ":engine_running"] = "1"
             fake.TimeMap2_timeToBeats = function(_, time)
                 return 0, math.floor(time / 4), 0, time, 0
@@ -237,6 +238,15 @@ local tests = {
                     record_lead_out = false,
                     switch_wait_bars = 4,
                 }
+                scenery.toggle_record(cfg, "")
+                assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 16.02)
+
+                cfg.record_lead_out = true
+                scenery.toggle_record(cfg, "")
+                assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 20.02)
+
+                fake.cursor_position = 16
+                cfg.record_lead_out = false
                 scenery.toggle_record(cfg, "")
                 assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 16.02)
 
@@ -462,6 +472,22 @@ local tests = {
                     pos = split_pos,
                     len = target.pos + target.len - split_pos,
                 }
+                if target.take then
+                    right.take = { is_midi = target.take.is_midi, notes = {} }
+                    right.take.item = right
+                    local offset = (split_pos - target.pos) * 100
+                    for _, note in ipairs(target.take.notes or {}) do
+                        if note.end_ppq > offset then
+                            right.take.notes[#right.take.notes + 1] = {
+                                selected = note.selected, muted = note.muted,
+                                start_ppq = math.max(0, note.start_ppq - offset),
+                                end_ppq = note.end_ppq - offset,
+                                channel = note.channel, pitch = note.pitch,
+                                velocity = note.velocity,
+                            }
+                        end
+                    end
+                end
                 target.len = split_pos - target.pos
                 track.items[#track.items + 1] = right
                 return right
@@ -740,7 +766,9 @@ local tests = {
                     return left.start_ppq < right.start_ppq
                 end)
             end
+            local extent_updates = 0
             fake.MIDI_SetItemExtents = function(target, start_qn, end_qn)
+                extent_updates = extent_updates + 1
                 target.len = end_qn - start_qn
             end
             fake.ValidatePtr2 = function() return true end
@@ -792,6 +820,48 @@ local tests = {
                     assert_equal(track.items[index].take.notes[1].start_ppq, 0)
                     assert_equal(track.items[index].take.notes[1].end_ppq, 200)
                 end
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_backfill"] = "1"
+            local crossing_take = {
+                is_midi = true,
+                notes = {
+                    { selected = false, muted = false, start_ppq = 300, end_ppq = 500,
+                        channel = 0, pitch = 64, velocity = 100 },
+                    { selected = false, muted = false, start_ppq = 600, end_ppq = 700,
+                        channel = 0, pitch = 67, velocity = 100 },
+                },
+            }
+            local crossing_item = {
+                guid = "{phrase-boundary-note}", pos = 12, len = 20, take = crossing_take,
+            }
+            local empty_wrap_take = { is_midi = true, notes = {} }
+            local empty_wrap_item = {
+                guid = "{empty-wrap-fragment}", pos = 0, len = 0.044, take = empty_wrap_take,
+            }
+            crossing_take.item = crossing_item
+            empty_wrap_take.item = empty_wrap_item
+            track.items = { empty_wrap_item, crossing_item }
+            local updates_before_crossing = extent_updates
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 32,
+                })
+                assert_equal(processed, 1)
+                assert_equal(extent_updates, updates_before_crossing)
+                assert_equal(#track.items, 2)
+                assert_equal(empty_wrap_item.len, 0.044)
+                assert_equal(track.items[1].pos, 16)
+                assert_equal(#track.items[1].take.notes, 2)
+                assert_equal(track.items[1].take.notes[1].start_ppq, 0)
+                assert_equal(track.items[1].take.notes[1].end_ppq, 100)
+                assert_equal(track.items[1].take.notes[2].start_ppq, 200)
+                assert_equal(track.items[2].pos, 0)
+                assert_equal(#track.items[2].take.notes, 2)
+                assert_equal(track.items[2].take.notes[1].start_ppq, 0)
+                assert_equal(track.items[2].take.notes[1].end_ppq, 100)
+                assert_equal(track.items[2].take.notes[2].start_ppq, 200)
             end)
         end,
     },
@@ -910,7 +980,7 @@ local tests = {
                 })
                 assert_equal(processed, 1)
                 assert_equal(item.active_take, nonempty_final_takes[2])
-                assert_equal(extent_updates, 1)
+                assert_equal(extent_updates, 0)
 
                 local two_takes = {
                     { is_midi = true, notes = 2 },
