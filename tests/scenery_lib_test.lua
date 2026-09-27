@@ -1006,7 +1006,7 @@ local tests = {
         end,
     },
     {
-        name = "full-scene MIDI recording activates the take before the final take",
+        name = "full-scene recording activates the take before the final take",
         run = function()
             local fake = make_state_fake()
             local track = {}
@@ -1069,6 +1069,7 @@ local tests = {
             end
             fake.TimeMap2_beatsToTime = function(_, _, measure) return measure * 4 end
             fake.TimeMap2_timeToQN = function(_, time) return time end
+            fake.TimeMap2_QNToTime = function(_, quarter_note) return quarter_note end
             local loop_source_updates = 0
             local extent_updates = 0
             fake.SetMediaItemInfo_Value = function(target, key, value)
@@ -1082,6 +1083,7 @@ local tests = {
                 extent_updates = extent_updates + 1
             end
             fake.UpdateItemInProject = function() end
+            fake.SetMediaItemLength = function(target, length) target.len = length end
             fake.SplitMediaItem = function() return nil end
 
             with_fake_reaper(fake, function()
@@ -1136,6 +1138,31 @@ local tests = {
                 assert_equal(processed, 1)
                 assert_equal(item.active_take, two_takes[1])
                 assert_equal(#item.takes, 1)
+
+                local audio_takes = {
+                    { is_midi = false },
+                    { is_midi = false },
+                }
+                item.takes = audio_takes
+                item.active_take = audio_takes[2]
+                processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 4,
+                })
+                assert_equal(processed, 1)
+                assert_equal(item.active_take, audio_takes[1])
+                assert_equal(#item.takes, 2)
+
+                fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
+                item.len = 6
+                item.active_take = audio_takes[2]
+                processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 4,
+                })
+                assert_equal(processed, 1)
+                assert_equal(item.active_take, audio_takes[1])
+                assert_equal(item.len, 6)
             end)
         end,
     },

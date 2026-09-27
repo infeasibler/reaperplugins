@@ -1388,9 +1388,14 @@ local function activate_previous_full_scene_take(item, pos, recorded_end, scene)
     local previous_take = reaper.GetTake(item, take_count - 2)
     local last_take = reaper.GetTake(item, take_count - 1)
     if previous_take and last_take
-        and reaper.TakeIsMIDI(previous_take) and reaper.TakeIsMIDI(last_take) then
-        local _, note_count, cc_count, text_count = reaper.MIDI_CountEvts(last_take)
-        if (note_count or 0) == 0 and (cc_count or 0) == 0 and (text_count or 0) == 0 then
+        and reaper.TakeIsMIDI(previous_take) == reaper.TakeIsMIDI(last_take) then
+        local empty_midi_take = false
+        if reaper.TakeIsMIDI(last_take) then
+            local _, note_count, cc_count, text_count = reaper.MIDI_CountEvts(last_take)
+            empty_midi_take = (note_count or 0) == 0 and (cc_count or 0) == 0
+                and (text_count or 0) == 0
+        end
+        if empty_midi_take then
             local selected_items = {}
             for index = 0, reaper.CountMediaItems(0) - 1 do
                 local candidate = reaper.GetMediaItem(0, index)
