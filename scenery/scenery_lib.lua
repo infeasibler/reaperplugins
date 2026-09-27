@@ -29,6 +29,7 @@ function M.get_config()
         record_backfill     = ext_get("record_backfill", "0") == "1",
         record_lead_in      = ext_get("record_lead_in", "0") == "1",
         record_lead_out     = ext_get("record_lead_out", "0") == "1",
+        record_lead_out_bars = math.max(0, tonumber(ext_get("record_lead_out_bars", "0.5")) or 0.5),
         record_end_of_bar   = ext_get("record_end_of_bar", "1") == "1",
         wait_for_scene_end  = ext_get("wait_for_scene_end", "0") == "1",
         switch_wait_bars    = math.max(0, math.floor(tonumber(ext_get("switch_wait_bars", "1")) or 1)),
@@ -94,6 +95,18 @@ end
 local function next_phrase_end_measure(current_measure, bars)
     bars = math.max(1, math.floor(tonumber(bars) or 1))
     return (math.floor(current_measure / bars) + 1) * bars
+end
+
+local function measure_offset_time(measure, bars)
+    bars = math.max(0, tonumber(bars) or 0)
+    local whole_bars = math.floor(bars)
+    local fraction = bars - whole_bars
+    local start_time = M.measure_start_time(measure + whole_bars)
+    if fraction <= 1e-9 then return start_time end
+    local end_time = M.measure_start_time(measure + whole_bars + 1)
+    local start_qn = reaper.TimeMap2_timeToQN(0, start_time)
+    local end_qn = reaper.TimeMap2_timeToQN(0, end_time)
+    return reaper.TimeMap2_QNToTime(0, start_qn + (end_qn - start_qn) * fraction)
 end
 
 -- ----------------------------------------------------------- scene model
@@ -550,7 +563,9 @@ end
 function M.toggle_record(cfg, script_dir)
     if M.is_recording() then
         if cfg.record_end_of_bar and M.engine_running() then
-            M.request_quantized_stop(cfg.switch_wait_bars, cfg.record_lead_out)
+            local lead_out_bars = cfg.record_lead_out
+                and (tonumber(cfg.record_lead_out_bars) or 0.5) or 0
+            M.request_quantized_stop(cfg.switch_wait_bars, lead_out_bars)
         else
             reaper.Main_OnCommand(1013, 0)
         end
@@ -562,9 +577,9 @@ function M.toggle_record(cfg, script_dir)
     reaper.Main_OnCommand(1013, 0)
 end
 
--- Keep recording through the phrase boundary, with one extra bar only when
--- lead-out is enabled; the engine's poll loop watches for this and stops.
-function M.request_quantized_stop(phrase_bars, lead_out)
+-- Keep recording through the phrase boundary and optional lead-out; the
+-- engine's poll loop watches for this and stops.
+function M.request_quantized_stop(phrase_bars, lead_out_bars)
     local position = M.cursor_position()
     local measure = M.measure_at(position)
     local phrase_end_measure = next_phrase_end_measure(measure, phrase_bars)
@@ -573,8 +588,7 @@ function M.request_quantized_stop(phrase_bars, lead_out)
         and position - measure_start <= 0.2 then
         phrase_end_measure = measure
     end
-    local target_measure = phrase_end_measure + (lead_out and 1 or 0)
-    local target = M.measure_start_time(target_measure) + 0.02
+    local target = measure_offset_time(phrase_end_measure, lead_out_bars) + 0.02
     reaper.SetExtState(M.EXT_SECTION, "pending_record_stop", tostring(target), false)
 end
 
@@ -1287,8 +1301,9 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     local phrase_end = M.bars_to_time(phrase_start, phrase_bars)
     if cfg.record_end_of_bar then
         local capture_end = M.snap_to_bar(recorded_end, "next", 0.2)
-        if cfg.record_lead_out then
-            capture_end = M.measure_start_time(M.measure_at(capture_end) - 1)
+        if cfg.record_lead_out and math.abs(capture_end - scene.rgnend) > 0.2 then
+            capture_end = M.measure_start_time(M.measure_at(capture_end)
+                - math.ceil(cfg.record_lead_out_bars or 0.5))
         end
         phrase_end = math.max(phrase_end, capture_end)
     end
@@ -1319,9 +1334,9 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         if is_midi then
             desired_end = math.max(recorded_end, phrase_end)
         else
-            local phrase_end_qn = reaper.TimeMap2_timeToQN(0, phrase_end)
-            local one_beat_end = reaper.TimeMap2_QNToTime(0, phrase_end_qn + 1)
-            desired_end = math.max(phrase_end, math.min(recorded_end, one_beat_end))
+            local lead_out_end = measure_offset_time(M.measure_at(phrase_end),
+                cfg.record_lead_out_bars or 0.5)
+            desired_end = math.max(phrase_end, math.min(recorded_end, lead_out_end))
             audio_crossfade = desired_end - phrase_end
         end
     end

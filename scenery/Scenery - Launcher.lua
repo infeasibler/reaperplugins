@@ -363,9 +363,23 @@ local function draw_settings(y, cfg)
         L.set_config("record_lead_in", cfg.record_lead_in and "0" or "1")
     end
 
+    local lead_out_y = y + (step + ROW.gap) * 8
     local lead_out_label = (cfg.record_lead_out and "[x] " or "[ ] ") .. "Record lead-out"
-    if button(PAD, y + (step + ROW.gap) * 8, w, step, lead_out_label) then
+    if button(PAD, lead_out_y, w - 72, step, lead_out_label) then
         L.set_config("record_lead_out", cfg.record_lead_out and "0" or "1")
+    end
+    if button(logical_width() - PAD - 68, lead_out_y, 68, step,
+        string.format("%g bars", cfg.record_lead_out_bars)) then
+        local ok, input = reaper.GetUserInputs("Lead-out duration", 1,
+            "Duration in bars:", tostring(cfg.record_lead_out_bars))
+        if ok then
+            local duration = tonumber(input)
+            if duration and duration >= 0 then
+                L.set_config("record_lead_out_bars", duration)
+            else
+                reaper.MB("Lead-out duration must be a non-negative number of bars.", "Scenery", 0)
+            end
+        end
     end
 
     local wait_label = (cfg.wait_for_scene_end and "[x] " or "[ ] ") .. "Wait for scene end when launching"

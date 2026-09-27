@@ -360,7 +360,7 @@ local tests = {
         end,
     },
     {
-        name = "quantized recording stop adds a bar only for lead-out",
+        name = "quantized recording stop uses configured lead-out duration",
         run = function()
             local fake = make_state_fake()
             fake.GetPlayState = function() return 4 end
@@ -371,17 +371,25 @@ local tests = {
                 return 0, math.floor(time / 4), 0, time, 0
             end
             fake.TimeMap2_beatsToTime = function(_, _, measure) return measure * 4 end
+            fake.TimeMap2_timeToQN = function(_, time) return time end
+            fake.TimeMap2_QNToTime = function(_, quarter_note) return quarter_note end
 
             with_fake_reaper(fake, function()
+                assert_equal(scenery.get_config().record_lead_out_bars, 0.5)
                 local cfg = {
                     record_end_of_bar = true,
                     record_lead_out = false,
+                    record_lead_out_bars = 0.5,
                     switch_wait_bars = 4,
                 }
                 scenery.toggle_record(cfg, "")
                 assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 16.02)
 
                 cfg.record_lead_out = true
+                scenery.toggle_record(cfg, "")
+                assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 18.02)
+
+                cfg.record_lead_out_bars = 1
                 scenery.toggle_record(cfg, "")
                 assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 20.02)
 
@@ -666,6 +674,7 @@ local tests = {
                 if key == "D_POSITION" then target.pos = value end
             end
             fake.GetActiveTake = function(target) return target.take end
+            fake.CountTakes = function() return 0 end
             fake.SetMediaItemLength = function(target, length) target.len = length end
             fake.UpdateItemInProject = function() end
             fake.CountMediaItems = function() return #track.items end
@@ -924,6 +933,19 @@ local tests = {
                 assert_equal(track.items[2].pos, 40)
                 assert_equal(track.items[2].len, 44)
                 assert_equal(track.items[2].pos - track.items[1].pos, 32)
+            end)
+
+            local full_scene_recording = { guid = "{full-scene-leadout}", pos = 0, len = 32 }
+            track.items = { full_scene_recording }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 32,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 1)
+                assert_equal(track.items[1].pos, 0)
+                assert_equal(track.items[1].len, 32)
             end)
 
             fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"

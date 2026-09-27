@@ -14,6 +14,7 @@ local defaults = table.concat({
     cfg.record_backfill and "1" or "0",
     cfg.record_lead_in and "1" or "0",
     cfg.record_lead_out and "1" or "0",
+    cfg.record_lead_out_bars,
     cfg.record_end_of_bar and "1" or "0",
     cfg.wait_for_scene_end and "1" or "0",
     cfg.switch_wait_bars,
@@ -23,17 +24,17 @@ local defaults = table.concat({
 }, ",")
 
 local ok, input = reaper.GetUserInputs(
-    "Scenery - Settings", 13,
+    "Scenery - Settings", 14,
     "Default scene length (bars):,Region colour (r,g,b):,Engine auto-follow (1/0):,Record auto-loop (1/0):," ..
-    "Back-fill auto-loops (1/0):,Record lead-in (1/0):,Record lead-out (1/0):,Record to end of phrase (1/0):,Wait for scene end when launching (1/0):,Phrase length (bars; ignored " ..
+    "Back-fill auto-loops (1/0):,Record lead-in (1/0):,Record lead-out (1/0):,Lead-out duration (bars):,Record to end of phrase (1/0):,Wait for scene end when launching (1/0):,Phrase length (bars; ignored " ..
     "if waiting for scene end):,Skip occupied tracks when copying (1/0):," ..
     "Auto repeat on scene start (1/0):,Insert copies after current scene (1/0):,extrawidth=60",
     defaults)
 if not ok then return end
 
-local bars, r, g, b, follow, record_auto_loop, record_backfill, record_lead_in, record_lead_out, record_end_of_bar, wait_for_scene_end, switch_wait_bars,
+local bars, r, g, b, follow, record_auto_loop, record_backfill, record_lead_in, record_lead_out, record_lead_out_bars, record_end_of_bar, wait_for_scene_end, switch_wait_bars,
 skip_occupied_tracks, auto_repeat, insert_after_current =
-    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
+    input:match("^([^,]*),(%d+),(%d+),(%d+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
 if not bars then
     reaper.MB("Could not parse the settings. Colour must be three numbers, e.g. 48,128,192.", "Scenery", 0)
     return
@@ -46,6 +47,11 @@ if bar_count < 1 then
 end
 
 local switch_wait_bar_count = math.max(0, math.floor(tonumber(switch_wait_bars) or 0))
+local lead_out_bar_count = tonumber(record_lead_out_bars)
+if not lead_out_bar_count or lead_out_bar_count < 0 then
+    reaper.MB("Lead-out duration must be a non-negative number of bars.", "Scenery", 0)
+    return
+end
 
 local function clamp_channel(v)
     return math.max(0, math.min(255, math.floor(tonumber(v) or 0)))
@@ -58,6 +64,7 @@ L.set_config("record_auto_loop", record_auto_loop:match("^%s*1%s*$") and "1" or 
 L.set_config("record_backfill", record_backfill:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_lead_in", record_lead_in:match("^%s*1%s*$") and "1" or "0")
 L.set_config("record_lead_out", record_lead_out:match("^%s*1%s*$") and "1" or "0")
+L.set_config("record_lead_out_bars", lead_out_bar_count)
 L.set_config("record_end_of_bar", record_end_of_bar:match("^%s*1%s*$") and "1" or "0")
 L.set_config("wait_for_scene_end", wait_for_scene_end:match("^%s*1%s*$") and "1" or "0")
 L.set_config("switch_wait_bars", switch_wait_bar_count)
