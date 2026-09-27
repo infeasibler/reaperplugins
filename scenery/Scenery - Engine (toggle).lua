@@ -25,6 +25,9 @@ end)()
 local was_recording = L.is_recording()
 local recording_snapshot = nil
 local recording_scene = nil
+local recording_loop = nil
+local recording_midi_events = {}
+local last_midi_sequence = L.latest_midi_input_sequence()
 local last_play_pos = nil
 local next_poll = 0
 
@@ -33,28 +36,55 @@ local next_poll = 0
 local function service_recording()
     local recording = L.is_recording()
     local cfg = L.get_config()
-    if not cfg.record_auto_loop then
-        recording_snapshot = nil
-        recording_scene = nil
-        was_recording = recording
-        return
-    end
+    local new_events
+    new_events, last_midi_sequence = L.recent_midi_input_events_after(last_midi_sequence)
 
     if recording and not was_recording then
         recording_snapshot = L.snapshot_item_guids()
         recording_scene = L.active_scene()
+        recording_midi_events = new_events
+        if recording_scene then
+            local start, stop = L.chain_bounds(recording_scene)
+            recording_loop = { pos = start, rgnend = stop }
+        end
+    elseif recording then
+        for _, event in ipairs(new_events) do
+            recording_midi_events[#recording_midi_events + 1] = event
+        end
     elseif not recording and was_recording then
         local target_scene = L.active_scene() or recording_scene
-        if recording_snapshot and target_scene then
+        local wrap_scene = recording_loop or recording_scene or target_scene
+        for _, event in ipairs(new_events) do
+            recording_midi_events[#recording_midi_events + 1] = event
+        end
+        local wrapped_notes = L.wrapped_midi_input_notes(recording_midi_events, wrap_scene)
+        if recording_snapshot and target_scene
+            and (cfg.record_auto_loop or #wrapped_notes > 0) then
             reaper.PreventUIRefresh(1)
             reaper.Undo_BeginBlock2(0)
-            local processed = L.apply_loop_source_to_new_items(recording_snapshot, target_scene)
-            reaper.Undo_EndBlock2(0, "Scenery: Record auto-loop (" .. processed .. " items)", -1)
+            local repaired = L.apply_wrapped_midi_notes_to_new_items(
+                recording_snapshot, wrap_scene, wrapped_notes)
+            local processed = 0
+            if cfg.record_auto_loop then
+                processed = L.apply_loop_source_to_new_items(recording_snapshot, target_scene)
+            end
+            local undo_label
+            if repaired > 0 then
+                undo_label = "Scenery: Repair wrapped MIDI (" .. repaired .. " notes)"
+                if processed > 0 then
+                    undo_label = undo_label .. "; record auto-loop (" .. processed .. " items)"
+                end
+            else
+                undo_label = "Scenery: Record auto-loop (" .. processed .. " items)"
+            end
+            reaper.Undo_EndBlock2(0, undo_label, -1)
             reaper.PreventUIRefresh(-1)
-            if processed > 0 then reaper.UpdateArrange() end
+            if processed > 0 or repaired > 0 then reaper.UpdateArrange() end
         end
         recording_snapshot = nil
         recording_scene = nil
+        recording_loop = nil
+        recording_midi_events = {}
     end
     was_recording = recording
 end
@@ -155,6 +185,8 @@ reaper.atexit(function()
     was_recording = false
     recording_snapshot = nil
     recording_scene = nil
+    recording_loop = nil
+    recording_midi_events = {}
     reaper.SetToggleCommandState(section_id, cmd_id, 0)
     reaper.RefreshToolbar2(section_id, cmd_id)
 end)

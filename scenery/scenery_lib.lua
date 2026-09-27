@@ -257,6 +257,99 @@ function M.is_recording()
     return (reaper.GetPlayState() & 4) ~= 0
 end
 
+function M.latest_midi_input_sequence()
+    if type(reaper.MIDI_GetRecentInputEvent) ~= "function" then return 0 end
+    local sequence = reaper.MIDI_GetRecentInputEvent(0)
+    return sequence or 0
+end
+
+function M.recent_midi_input_events_after(sequence)
+    if type(reaper.MIDI_GetRecentInputEvent) ~= "function" then
+        return {}, sequence or 0
+    end
+
+    local events = {}
+    local newest = sequence or 0
+    local index = 0
+    while true do
+        local event_sequence, message, _, device, position, loop_count =
+            reaper.MIDI_GetRecentInputEvent(index)
+        if not event_sequence or event_sequence == 0 or event_sequence <= (sequence or 0) then
+            break
+        end
+        newest = math.max(newest, event_sequence)
+        if message and position >= 0 and loop_count >= 0 and (device & 0x10000) == 0 then
+            events[#events + 1] = {
+                sequence = event_sequence,
+                message = message,
+                device = device & 0xffff,
+                position = position,
+                loop_count = loop_count,
+            }
+        end
+        index = index + 1
+    end
+    table.sort(events, function(left, right) return left.sequence < right.sequence end)
+    return events, newest
+end
+
+function M.wrapped_midi_input_notes(events, scene)
+    if not events or not scene or scene.rgnend <= scene.pos then return {} end
+    local loop_length = scene.rgnend - scene.pos
+    local open_notes = {}
+    local wrapped_notes = {}
+
+    for _, event in ipairs(events) do
+        local status = event.message:byte(1)
+        local pitch = event.message:byte(2)
+        local velocity = event.message:byte(3) or 0
+        if status and pitch and ((status & 0xf0) == 0x80 or (status & 0xf0) == 0x90) then
+            local channel = status & 0x0f
+            local key = table.concat({ event.device, channel, pitch }, ":")
+            local is_note_on = (status & 0xf0) == 0x90 and velocity > 0
+            if is_note_on then
+                if event.position >= scene.pos and event.position < scene.rgnend then
+                    open_notes[key] = open_notes[key] or {}
+                    open_notes[key][#open_notes[key] + 1] = {
+                        device = event.device,
+                        channel = channel,
+                        pitch = pitch,
+                        velocity = velocity,
+                        position = event.position,
+                        loop_count = event.loop_count,
+                    }
+                end
+            else
+                local queued = open_notes[key]
+                if queued then
+                    for note_index, note_on in ipairs(queued) do
+                        local loop_delta = event.loop_count - note_on.loop_count
+                        if loop_delta > 0 and event.position >= scene.pos
+                            and event.position < scene.rgnend then
+                            local remaining = (loop_delta - 1) * loop_length
+                                + event.position - scene.pos
+                            if remaining > 0 then
+                                wrapped_notes[#wrapped_notes + 1] = {
+                                    device = note_on.device,
+                                    channel = note_on.channel,
+                                    pitch = note_on.pitch,
+                                    velocity = note_on.velocity,
+                                    start_position = note_on.position,
+                                    remaining_seconds = remaining,
+                                }
+                            end
+                            table.remove(queued, note_index)
+                            break
+                        end
+                    end
+                    if #queued == 0 then open_notes[key] = nil end
+                end
+            end
+        end
+    end
+    return wrapped_notes
+end
+
 function M.cursor_position()
     if M.is_playing() then return reaper.GetPlayPosition() end
     return reaper.GetCursorPosition()
@@ -871,13 +964,14 @@ local function midi_notes_crossing_boundary(item, boundary)
     return notes
 end
 
-local function apply_midi_boundary_notes(notes, item, phrase_start)
-    if #notes == 0 then return end
-    local take = reaper.GetActiveTake(item)
-    if not take or not reaper.TakeIsMIDI(take) then return end
+local function apply_midi_boundary_notes(notes, item, phrase_start, target_take)
+    if #notes == 0 then return 0 end
+    local take = target_take or reaper.GetActiveTake(item)
+    if not take or not reaper.TakeIsMIDI(take) then return 0 end
 
     local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, phrase_start)
     local changed = false
+    local changed_count = 0
     for _, note in ipairs(notes) do
         local end_ppq = start_ppq + note.remaining_ppq
         local _, note_count = reaper.MIDI_CountEvts(take)
@@ -899,14 +993,113 @@ local function apply_midi_boundary_notes(notes, item, phrase_start)
                 reaper.MIDI_SetNote(take, matching_index, nil, nil, nil, end_ppq,
                     nil, nil, nil, true)
                 changed = true
+                changed_count = changed_count + 1
             end
         else
             reaper.MIDI_InsertNote(take, note.selected, note.muted, start_ppq, end_ppq,
                 note.channel, note.pitch, note.velocity, true)
             changed = true
+            changed_count = changed_count + 1
         end
     end
     if changed then reaper.MIDI_Sort(take) end
+    return changed_count
+end
+
+local function track_accepts_midi_device(track, device)
+    local input = reaper.GetMediaTrackInfo_Value(track, "I_RECINPUT")
+    if input < 0 or (input & 4096) == 0 then return false end
+    local input_device = (input >> 5) & 63
+    return input_device == 63 or input_device == device
+end
+
+local function take_scene_note_count(take, scene)
+    if not take or not reaper.TakeIsMIDI(take) then return -1 end
+
+    local _, note_count = reaper.MIDI_CountEvts(take)
+    local scene_notes = 0
+    for note_index = 0, note_count - 1 do
+        local ok, _, _, start_ppq, end_ppq = reaper.MIDI_GetNote(take, note_index)
+        if ok then
+            local start_time = reaper.MIDI_GetProjTimeFromPPQPos(take, start_ppq)
+            local end_time = reaper.MIDI_GetProjTimeFromPPQPos(take, end_ppq)
+            if start_time < scene.rgnend - 1e-9 and end_time > scene.pos + 1e-9 then
+                scene_notes = scene_notes + 1
+            end
+        end
+    end
+    return scene_notes
+end
+
+local function most_populated_midi_take(item, scene)
+    local best_take
+    local best_count = -1
+    for take_index = 0, reaper.CountTakes(item) - 1 do
+        local take = reaper.GetTake(item, take_index)
+        local note_count = take_scene_note_count(take, scene)
+        if note_count > best_count then
+            best_take = take
+            best_count = note_count
+        end
+    end
+    return best_take
+end
+
+function M.apply_wrapped_midi_notes_to_new_items(existing_guids, scene, wrapped_notes)
+    if not existing_guids or not scene or not wrapped_notes or #wrapped_notes == 0 then return 0 end
+
+    local targets = {}
+    for track_index = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, track_index)
+        for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, item_index)
+            local guid_ok, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
+            local position = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            local take = most_populated_midi_take(item, scene)
+            if guid_ok and guid ~= ""
+                and position <= scene.pos + 1e-9 and position + length > scene.pos + 1e-9
+                and take and reaper.TakeIsMIDI(take) then
+                local candidate = {
+                    track = track,
+                    item = item,
+                    take = take,
+                    position = position,
+                    is_new = not existing_guids[guid],
+                }
+                local current = targets[track]
+                if not current or (candidate.is_new and not current.is_new)
+                    or (candidate.is_new == current.is_new
+                        and math.abs(candidate.position - scene.pos)
+                            < math.abs(current.position - scene.pos)) then
+                    targets[track] = candidate
+                end
+            end
+        end
+    end
+
+    local repaired = 0
+    for _, target in pairs(targets) do
+        local take = target.take
+        local notes = {}
+        for _, wrapped in ipairs(wrapped_notes) do
+            if track_accepts_midi_device(target.track, wrapped.device) then
+                local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, scene.pos)
+                local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take,
+                    scene.pos + wrapped.remaining_seconds)
+                notes[#notes + 1] = {
+                    selected = false,
+                    muted = false,
+                    remaining_ppq = end_ppq - start_ppq,
+                    channel = wrapped.channel,
+                    pitch = wrapped.pitch,
+                    velocity = wrapped.velocity,
+                }
+            end
+        end
+        repaired = repaired + apply_midi_boundary_notes(notes, target.item, scene.pos, take)
+    end
+    return repaired
 end
 
 local function remove_midi_notes_starting_at_or_after(take, end_time)

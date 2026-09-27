@@ -139,6 +139,146 @@ end
 
 local tests = {
     {
+        name = "recent MIDI input pairs note events across a loop wrap",
+        run = function()
+            local fake = make_state_fake()
+            local history = {
+                { 4, string.char(0x90, 60, 90), 0, 1, 63.75, 2 },
+                { 5, string.char(0x80, 60, 0), 0, 1, 0.25, 3 },
+                { 6, string.char(0x90, 62, 90), 0, 1, 4, 3 },
+                { 7, string.char(0x80, 62, 0), 0, 1, 5, 3 },
+            }
+            fake.MIDI_GetRecentInputEvent = function(index)
+                local event = history[#history - index]
+                if not event then return 0 end
+                return table.unpack(event)
+            end
+            with_fake_reaper(fake, function()
+                local events, newest = scenery.recent_midi_input_events_after(3)
+                assert_equal(#events, 4)
+                assert_equal(newest, 7)
+                local wrapped = scenery.wrapped_midi_input_notes(events, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(#wrapped, 1)
+                assert_equal(wrapped[1].device, 1)
+                assert_equal(wrapped[1].channel, 0)
+                assert_equal(wrapped[1].pitch, 60)
+                assert_equal(wrapped[1].velocity, 90)
+                assert_equal(wrapped[1].start_position, 63.75)
+                assert_equal(wrapped[1].remaining_seconds, 0.25)
+            end)
+        end,
+    },
+    {
+        name = "wrapped MIDI continuation is added to the most populated scene take",
+        run = function()
+            local fake = make_state_fake()
+            local take1 = {
+                is_midi = true,
+                notes = {
+                    { selected = false, muted = false, start_ppq = 6375, end_ppq = 6400,
+                        channel = 0, pitch = 60, velocity = 90 },
+                },
+            }
+            local take2 = {
+                is_midi = true,
+                notes = {
+                    { selected = false, muted = false, start_ppq = 100, end_ppq = 150,
+                        channel = 0, pitch = 62, velocity = 90 },
+                    { selected = false, muted = false, start_ppq = 300, end_ppq = 350,
+                        channel = 0, pitch = 64, velocity = 90 },
+                },
+            }
+            local take3 = {
+                is_midi = true,
+                notes = {
+                    { selected = false, muted = false, start_ppq = 0, end_ppq = 25,
+                        channel = 0, pitch = 60, velocity = 90 },
+                },
+            }
+            local item = {
+                guid = "{wrap-body}", pos = 0, len = 64,
+                takes = { take1, take2, take3 }, active_take = 3,
+            }
+            take1.item = item
+            take2.item = item
+            take3.item = item
+            local track = { items = { item }, rec_input = 4096 + (1 << 5) }
+            fake.CountTracks = function() return 1 end
+            fake.GetTrack = function() return track end
+            fake.CountTrackMediaItems = function(target) return #target.items end
+            fake.GetTrackMediaItem = function(target, index) return target.items[index + 1] end
+            fake.GetSetMediaItemInfo_String = function(target, key)
+                if key == "GUID" then return true, target.guid end
+            end
+            fake.GetMediaItemInfo_Value = function(target, key)
+                if key == "D_POSITION" then return target.pos end
+                if key == "D_LENGTH" then return target.len end
+            end
+            fake.GetMediaTrackInfo_Value = function(target, key)
+                if key == "I_RECINPUT" then return target.rec_input end
+            end
+            fake.CountTakes = function(target) return #target.takes end
+            fake.GetTake = function(target, index) return target.takes[index + 1] end
+            fake.GetActiveTake = function(target) return target.takes[target.active_take] end
+            fake.TakeIsMIDI = function(target) return target and target.is_midi end
+            fake.MIDI_GetProjTimeFromPPQPos = function(target, ppq)
+                return target.item.pos + ppq / 100
+            end
+            fake.MIDI_CountEvts = function(target) return true, #target.notes, 0, 0 end
+            fake.MIDI_GetNote = function(target, index)
+                local note = target.notes[index + 1]
+                if not note then return false end
+                return true, note.selected, note.muted, note.start_ppq, note.end_ppq,
+                    note.channel, note.pitch, note.velocity
+            end
+            fake.MIDI_GetPPQPosFromProjTime = function(target, time)
+                return (time - target.item.pos) * 100
+            end
+            fake.MIDI_InsertNote = function(target, selected, muted, start_ppq, end_ppq,
+                channel, pitch, velocity)
+                target.notes[#target.notes + 1] = {
+                    selected = selected,
+                    muted = muted,
+                    start_ppq = start_ppq,
+                    end_ppq = end_ppq,
+                    channel = channel,
+                    pitch = pitch,
+                    velocity = velocity,
+                }
+                return true
+            end
+            fake.MIDI_SetNote = function(target, index, _, _, _, end_ppq)
+                target.notes[index + 1].end_ppq = end_ppq
+                return true
+            end
+            fake.MIDI_Sort = function(target)
+                table.sort(target.notes, function(left, right)
+                    return left.start_ppq < right.start_ppq
+                end)
+            end
+            with_fake_reaper(fake, function()
+                local repaired = scenery.apply_wrapped_midi_notes_to_new_items({
+                    ["{wrap-body}"] = true,
+                }, {
+                    pos = 0,
+                    rgnend = 64,
+                }, {
+                    { device = 1, channel = 0, pitch = 60, velocity = 90,
+                        start_position = 63.75, remaining_seconds = 0.25 },
+                })
+                assert_equal(repaired, 1)
+                assert_equal(#take1.notes, 1)
+                assert_equal(#take2.notes, 3)
+                assert_equal(take2.notes[1].start_ppq, 0)
+                assert_equal(take2.notes[1].end_ppq, 25)
+                assert_equal(#take3.notes, 1)
+            end)
+        end,
+    },
+    {
         name = "clone replaces destination items and copies lead-in overlap by default",
         run = function()
             local fake, track, lead_in, destination_item_before, destination_item = make_duplicate_fake(false)
