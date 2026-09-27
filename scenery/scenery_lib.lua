@@ -941,6 +941,17 @@ local function glue_phrase_items(items)
         local item = reaper.GetSelectedMediaItem(0, i)
         if not item_lookup[item] then outputs[#outputs + 1] = item end
     end
+    if #outputs == 0 then
+        local surviving_item
+        local surviving_count = 0
+        for _, item in ipairs(items) do
+            if reaper.ValidatePtr2(0, item, "MediaItem*") then
+                surviving_item = item
+                surviving_count = surviving_count + 1
+            end
+        end
+        if surviving_count == 1 then outputs[1] = surviving_item end
+    end
 
     reaper.SelectAllMediaItems(0, false)
     for item in pairs(selected_before) do
@@ -1052,8 +1063,12 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
             local left = item
             item = glue_phrase_items({ left, right })
             if not item then
-                reaper.SetMediaItemInfo_Value(left, "D_POSITION", pos)
-                reaper.SetMediaItemInfo_Value(right, "D_POSITION", scene.rgnend)
+                if reaper.ValidatePtr2(0, left, "MediaItem*") then
+                    reaper.SetMediaItemInfo_Value(left, "D_POSITION", pos)
+                end
+                if reaper.ValidatePtr2(0, right, "MediaItem*") then
+                    reaper.SetMediaItemInfo_Value(right, "D_POSITION", scene.rgnend)
+                end
                 return false
             end
             pos = scene.pos - lead_in
