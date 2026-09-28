@@ -34,6 +34,7 @@ function M.get_config()
         wait_for_scene_end  = ext_get("wait_for_scene_end", "0") == "1",
         switch_wait_bars    = math.max(0, math.floor(tonumber(ext_get("switch_wait_bars", "1")) or 1)),
         skip_occupied_tracks = ext_get("skip_occupied_tracks", "0") == "1",
+        skip_track_guids    = ext_get("skip_track_guids", ""),
         auto_repeat         = ext_get("auto_repeat", "1") == "1",
         insert_after_current = ext_get("insert_after_current", "0") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
@@ -836,38 +837,40 @@ local function occupied_tracks_in_range(start_time, end_time)
     return occupied
 end
 
-local function clear_items_in_range(start_time, end_time)
+local function clear_items_in_range(start_time, end_time, preserved_tracks)
     local incoming_crossfades = {}
     for track_index = 0, reaper.CountTracks(0) - 1 do
         local track = reaper.GetTrack(0, track_index)
-        local overlapping = {}
-        for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
-            local item = reaper.GetTrackMediaItem(track, item_index)
-            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-            local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-            if pos < end_time - 1e-9 and item_end > start_time + 1e-9 then
-                local crossfade = pos < start_time - 1e-9 and leadout_crossfade(item, start_time)
-                if crossfade then
-                    add_crossfade(incoming_crossfades, track, crossfade)
-                else
-                    overlapping[#overlapping + 1] = item
+        if not (preserved_tracks and preserved_tracks[track]) then
+            local overlapping = {}
+            for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
+                local item = reaper.GetTrackMediaItem(track, item_index)
+                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                if pos < end_time - 1e-9 and item_end > start_time + 1e-9 then
+                    local crossfade = pos < start_time - 1e-9 and leadout_crossfade(item, start_time)
+                    if crossfade then
+                        add_crossfade(incoming_crossfades, track, crossfade)
+                    else
+                        overlapping[#overlapping + 1] = item
+                    end
                 end
             end
-        end
 
-        for _, item in ipairs(overlapping) do
-            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-            if pos < start_time - 1e-9 then
-                item = reaper.SplitMediaItem(item, start_time)
-            end
-            if item then
-                pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-                local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-                if pos < end_time - 1e-9 then
-                    if item_end > end_time + 1e-9 and not reaper.SplitMediaItem(item, end_time) then
-                        item = nil
+            for _, item in ipairs(overlapping) do
+                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                if pos < start_time - 1e-9 then
+                    item = reaper.SplitMediaItem(item, start_time)
+                end
+                if item then
+                    pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                    local item_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                    if pos < end_time - 1e-9 then
+                        if item_end > end_time + 1e-9 and not reaper.SplitMediaItem(item, end_time) then
+                            item = nil
+                        end
+                        if item then reaper.DeleteTrackMediaItem(track, item) end
                     end
-                    if item then reaper.DeleteTrackMediaItem(track, item) end
                 end
             end
         end
@@ -883,15 +886,23 @@ function M.duplicate_scene(source, copy_fn)
     local scene = cfg.insert_after_current and M.insert_scene_after(source, bars) or M.create_scene(bars)
     local unit = source.rgnend - source.pos
     copy_fn = copy_fn or M.copy_items
-    local occupied_tracks
+    local skip_tracks = {}
+    for guid in cfg.skip_track_guids:gmatch("[^|]+") do
+        for track_index = 0, reaper.CountTracks(0) - 1 do
+            local track = reaper.GetTrack(0, track_index)
+            if reaper.GetTrackGUID(track) == guid then skip_tracks[track] = true end
+        end
+    end
     local incoming_crossfades = {}
     if cfg.skip_occupied_tracks then
-        occupied_tracks = occupied_tracks_in_range(scene.pos, scene.rgnend)
+        for track in pairs(occupied_tracks_in_range(scene.pos, scene.rgnend)) do
+            skip_tracks[track] = true
+        end
     else
-        incoming_crossfades = clear_items_in_range(scene.pos, scene.rgnend)
+        incoming_crossfades = clear_items_in_range(scene.pos, scene.rgnend, skip_tracks)
     end
     if unit <= 1e-9 then
-        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend, occupied_tracks,
+        copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend, skip_tracks,
             incoming_crossfades, source_items)
         return scene
     end
@@ -901,7 +912,7 @@ function M.duplicate_scene(source, copy_fn)
         local tile_end = math.min(dest + unit, scene.rgnend)
         local crossfades = first_tile and incoming_crossfades
             or crossfades_for_tile(source_crossfades, source.rgnend, dest)
-        copy_fn(source.pos, source.rgnend, dest, tile_end, occupied_tracks, crossfades, source_items)
+        copy_fn(source.pos, source.rgnend, dest, tile_end, skip_tracks, crossfades, source_items)
         dest = dest + unit
         first_tile = false
     end

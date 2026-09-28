@@ -60,6 +60,8 @@ local mouse = { x = 0, y = 0, lclick = false, rclick = false, double = false }
 local prev_cap = 0
 local last_click = { time = 0, y = -1 }
 local scroll = 0
+local track_skip_open = false
+local track_skip_scroll = 0
 
 local function logical_width()
     return gfx.w / SCALE.value
@@ -417,9 +419,14 @@ local function draw_settings(y, cfg)
         L.set_config("insert_after_current", cfg.insert_after_current and "0" or "1")
     end
 
-    local skip_occupied_label = (cfg.skip_occupied_tracks and "[x] " or "[ ] ") .. "Skip occupied tracks when copying"
-    if button(PAD, y + (step + ROW.gap) * 13, w, step, skip_occupied_label) then
+    local skip_occupied_y = y + (step + ROW.gap) * 13
+    local skip_occupied_label = (cfg.skip_occupied_tracks and "[x] " or "[ ] ") .. "Skip occupied tracks"
+    if button(PAD, skip_occupied_y, w - 78, step, skip_occupied_label) then
         L.set_config("skip_occupied_tracks", cfg.skip_occupied_tracks and "0" or "1")
+    end
+    if button(logical_width() - PAD - 70, skip_occupied_y, 70, step, "Tracks...") then
+        track_skip_open = true
+        track_skip_scroll = 0
     end
 
     local scale_y = y + (step + ROW.gap) * 14
@@ -433,6 +440,81 @@ local function draw_settings(y, cfg)
     if button(logical_width() - PAD - 22, scale_y, 22, step, "+", nil,
         SCALE.value >= SCALE.max) then
         resize_window(math.min(SCALE.max, SCALE.value + SCALE.step))
+    end
+end
+
+local function skip_track_entries()
+    local entries = {}
+    for track_index = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, track_index)
+        local _, name = reaper.GetTrackName(track, "")
+        entries[#entries + 1] = {
+            guid = reaper.GetTrackGUID(track),
+            number = track_index + 1,
+            name = name ~= "" and name or "Track " .. (track_index + 1),
+        }
+    end
+    return entries
+end
+
+local function selected_track_guids(serialized)
+    local selected = {}
+    for guid in serialized:gmatch("[^|]+") do selected[guid] = true end
+    return selected
+end
+
+local function save_selected_track_guids(entries, selected)
+    local guids = {}
+    for _, entry in ipairs(entries) do
+        if selected[entry.guid] then guids[#guids + 1] = entry.guid end
+    end
+    L.set_config("skip_track_guids", table.concat(guids, "|"))
+end
+
+local function draw_track_skip_selector(cfg)
+    local width, height = logical_width(), logical_height()
+    local entries = skip_track_entries()
+    local selected = selected_track_guids(cfg.skip_track_guids)
+    local selected_count = 0
+    for _, entry in ipairs(entries) do
+        if selected[entry.guid] then selected_count = selected_count + 1 end
+    end
+
+    draw_label("Skip these tracks when copying", PAD, PAD, width - PAD * 2, 24)
+    local controls_y = PAD + 28
+    local control_gap = ROW.gap
+    local control_width = (width - PAD * 2 - control_gap * 2) / 3
+    if button(PAD, controls_y, control_width, ROW.h, "All") then
+        for _, entry in ipairs(entries) do selected[entry.guid] = true end
+        save_selected_track_guids(entries, selected)
+    end
+    if button(PAD + control_width + control_gap, controls_y, control_width, ROW.h, "None") then
+        selected = {}
+        save_selected_track_guids(entries, selected)
+    end
+    if button(PAD + (control_width + control_gap) * 2, controls_y,
+        control_width, ROW.h, "Done") then
+        track_skip_open = false
+    end
+
+    draw_label(selected_count .. " selected", PAD, controls_y + ROW.h + ROW.gap,
+        width - PAD * 2, 20, COLOR.dim)
+
+    local list_top = controls_y + ROW.h + ROW.gap + 24
+    local list_height = math.max(ROW.h, height - list_top - PAD)
+    local row_step = ROW.h + ROW.gap
+    track_skip_scroll = math.min(math.max(0, track_skip_scroll),
+        math.max(0, #entries * row_step - list_height))
+    for _, entry in ipairs(entries) do
+        local row_y = list_top + (entry.number - 1) * row_step - track_skip_scroll
+        if row_y + ROW.h > list_top and row_y < list_top + list_height then
+            local label = (selected[entry.guid] and "[x] " or "[ ] ") ..
+                entry.number .. ". " .. entry.name
+            if button(PAD, row_y, width - PAD * 2, ROW.h, label) then
+                selected[entry.guid] = not selected[entry.guid]
+                save_selected_track_guids(entries, selected)
+            end
+        end
     end
 end
 
@@ -490,7 +572,11 @@ local function read_input()
     end
 
     if gfx.mouse_wheel ~= 0 then
-        scroll = scroll - (gfx.mouse_wheel / 120) * (ROW.h + ROW.gap)
+        if track_skip_open then
+            track_skip_scroll = track_skip_scroll - (gfx.mouse_wheel / 120) * (ROW.h + ROW.gap)
+        else
+            scroll = scroll - (gfx.mouse_wheel / 120) * (ROW.h + ROW.gap)
+        end
         gfx.mouse_wheel = 0
     end
 end
@@ -516,11 +602,15 @@ end
 
 local function frame()
     local cfg = L.get_config()
-    local scenes = L.scan_scenes()
-
     set_color(COLOR.bg)
     gfx.rect(0, 0, gfx.w, gfx.h, 1)
 
+    if track_skip_open then
+        draw_track_skip_selector(cfg)
+        return
+    end
+
+    local scenes = L.scan_scenes()
     local list_bottom = draw_footer(scenes, cfg)
     draw_scene_list(scenes, PAD, math.max(ROW.h, list_bottom - PAD))
 end
@@ -531,7 +621,10 @@ local function loop()
     gfx.update()
 
     local char = gfx.getchar()
-    if char == -1 or char == 27 then return end
+    if char == -1 then return end
+    if char == 27 then
+        if track_skip_open then track_skip_open = false else return end
+    end
     reaper.defer(loop)
 end
 

@@ -48,7 +48,7 @@ local function make_state_fake()
     }
 end
 
-local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout)
+local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout, skip_track_guids)
     local fake = make_state_fake()
     local markers = { { true, 0, 4, "Source", 1, 0 } }
     local track = { items = {} }
@@ -65,6 +65,7 @@ local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout)
         track.items[#track.items + 1] = audio_leadout
     end
     fake.values[scenery.EXT_SECTION .. ":default_bars"] = "2"
+    fake.values[scenery.EXT_SECTION .. ":skip_track_guids"] = skip_track_guids or ""
     if skip_occupied_tracks then
         fake.values[scenery.EXT_SECTION .. ":skip_occupied_tracks"] = "1"
     end
@@ -84,6 +85,8 @@ local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout)
     end
     fake.CountTracks = function() return 1 end
     fake.GetTrack = function() return track end
+    track.guid = "{track-1}"
+    fake.GetTrackGUID = function(target) return target.guid end
     fake.CountTrackMediaItems = function(target) return #target.items end
     fake.GetTrackMediaItem = function(target, index) return target.items[index + 1] end
     fake.GetMediaItemInfo_Value = function(item, key)
@@ -324,6 +327,23 @@ local tests = {
                 assert_equal(destination_item_before.pos, 2)
                 assert_equal(destination_item_before.len, 4)
                 assert_equal(destination_item.pos, 11)
+                assert_equal(destination_item.len, 2)
+            end)
+        end,
+    },
+    {
+        name = "explicitly skipped tracks preserve destination items and skip copies",
+        run = function()
+            local fake, track, lead_in, destination_item_before, destination_item =
+                make_duplicate_fake(false, false, "{track-1}")
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.get_config().skip_occupied_tracks, false)
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 })
+                assert_equal(#track.items, 3)
+                assert_equal(track.items[1], lead_in)
+                assert_equal(track.items[2], destination_item_before)
+                assert_equal(track.items[3], destination_item)
+                assert_equal(destination_item_before.len, 4)
                 assert_equal(destination_item.len, 2)
             end)
         end,
