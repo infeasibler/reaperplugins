@@ -1142,6 +1142,79 @@ local function remove_midi_notes_starting_at_or_after(take, end_time)
     if #note_indices > 0 then reaper.MIDI_Sort(take) end
 end
 
+local function midi_note_end_after_boundary(take, boundary)
+    if not take or not reaper.TakeIsMIDI(take) then return nil end
+
+    local _, note_count = reaper.MIDI_CountEvts(take)
+    local latest_end
+    for note_index = 0, note_count - 1 do
+        local ok, _, _, start_ppq, end_ppq = reaper.MIDI_GetNote(take, note_index)
+        if ok then
+            local start_time = reaper.MIDI_GetProjTimeFromPPQPos(take, start_ppq)
+            local end_time = reaper.MIDI_GetProjTimeFromPPQPos(take, end_ppq)
+            if start_time < boundary - 1e-9 and end_time > boundary + 1e-9 then
+                latest_end = math.max(latest_end or boundary, end_time)
+            end
+        end
+    end
+    return latest_end
+end
+
+local function merge_midi_notes_crossing_boundary(take, boundary)
+    if not take or not reaper.TakeIsMIDI(take) then return end
+
+    local _, note_count = reaper.MIDI_CountEvts(take)
+    local groups = {}
+    for note_index = 0, note_count - 1 do
+        local ok, selected, muted, start_ppq, end_ppq, channel, pitch, velocity =
+            reaper.MIDI_GetNote(take, note_index)
+        if ok then
+            local start_time = reaper.MIDI_GetProjTimeFromPPQPos(take, start_ppq)
+            local end_time = reaper.MIDI_GetProjTimeFromPPQPos(take, end_ppq)
+            if start_time < boundary - 1e-9 and end_time > boundary + 1e-9 then
+                local key = channel .. ":" .. pitch
+                local group = groups[key] or {}
+                groups[key] = group
+                group[#group + 1] = {
+                    index = note_index,
+                    selected = selected,
+                    muted = muted,
+                    start_ppq = start_ppq,
+                    end_ppq = end_ppq,
+                    channel = channel,
+                    pitch = pitch,
+                    velocity = velocity,
+                }
+            end
+        end
+    end
+
+    local delete_indices = {}
+    local changed = false
+    for _, group in pairs(groups) do
+        if #group > 1 then
+            table.sort(group, function(left, right)
+                return left.start_ppq < right.start_ppq
+            end)
+            local first = group[1]
+            local merged_end = first.end_ppq
+            for index = 2, #group do
+                merged_end = math.max(merged_end, group[index].end_ppq)
+                delete_indices[#delete_indices + 1] = group[index].index
+            end
+            reaper.MIDI_SetNote(take, first.index, first.selected, first.muted,
+                first.start_ppq, merged_end, first.channel, first.pitch,
+                first.velocity, true)
+            changed = true
+        end
+    end
+    table.sort(delete_indices, function(left, right) return left > right end)
+    for _, note_index in ipairs(delete_indices) do
+        reaper.MIDI_DeleteNote(take, note_index)
+    end
+    if changed then reaper.MIDI_Sort(take) end
+end
+
 local function glue_phrase_items(items)
     if #items < 2 then return items[1] end
 
@@ -1203,7 +1276,8 @@ local function phrase_start_for_recording(pos, scene, phrase_bars)
     return math.max(scene.pos, phrase_start)
 end
 
-local function create_phrase_item(track, item, phrase_start, phrase_end)
+local function create_phrase_item(track, item, phrase_start, phrase_end,
+    preserve_lead_in, preserve_lead_out)
     local chunk = source_chunk(item, false)
     if not chunk then return nil end
 
@@ -1214,7 +1288,7 @@ local function create_phrase_item(track, item, phrase_start, phrase_end)
     end
 
     local item_pos = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
-    if item_pos < phrase_start - 1e-9 then
+    if item_pos < phrase_start - 1e-9 and not preserve_lead_in then
         local right = reaper.SplitMediaItem(phrase_item, phrase_start)
         if not right then
             reaper.DeleteTrackMediaItem(track, phrase_item)
@@ -1227,20 +1301,33 @@ local function create_phrase_item(track, item, phrase_start, phrase_end)
         return nil
     end
 
-    local item_end = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
-        + reaper.GetMediaItemInfo_Value(phrase_item, "D_LENGTH")
-    if item_end > phrase_end + 1e-9 then
-        local right = reaper.SplitMediaItem(phrase_item, phrase_end)
-        if not right then
-            reaper.DeleteTrackMediaItem(track, phrase_item)
-            return nil
+    local take = reaper.GetActiveTake(phrase_item)
+    local note_end = midi_note_end_after_boundary(take, phrase_end)
+    if preserve_lead_out then
+        return phrase_item
+    elseif note_end then
+        remove_midi_notes_starting_at_or_after(take, phrase_end)
+        local phrase_pos = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
+        reaper.MIDI_SetItemExtents(phrase_item,
+            reaper.TimeMap2_timeToQN(0, phrase_pos),
+            reaper.TimeMap2_timeToQN(0, note_end))
+    else
+        local item_end = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
+            + reaper.GetMediaItemInfo_Value(phrase_item, "D_LENGTH")
+        if item_end > phrase_end + 1e-9 then
+            local right = reaper.SplitMediaItem(phrase_item, phrase_end)
+            if not right then
+                reaper.DeleteTrackMediaItem(track, phrase_item)
+                return nil
+            end
+            reaper.DeleteTrackMediaItem(track, right)
         end
-        reaper.DeleteTrackMediaItem(track, right)
     end
     return phrase_item
 end
 
-local function backfill_loop_source(track, item, scene, phrase_start, phrase_end)
+local function backfill_loop_source(track, item, scene, phrase_start, phrase_end,
+    preserve_lead_in, preserve_lead_out, phrase_items)
     if phrase_start <= scene.pos + 1e-9 then return end
     local unit = phrase_end - phrase_start
     local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
@@ -1248,7 +1335,8 @@ local function backfill_loop_source(track, item, scene, phrase_start, phrase_end
     local phrase_item = item
     local temporary_phrase_item = false
     if math.abs(item_pos - phrase_start) > 1e-9 or math.abs(item_end - phrase_end) > 1e-9 then
-        phrase_item = create_phrase_item(track, item, phrase_start, phrase_end)
+        phrase_item = create_phrase_item(track, item, phrase_start, phrase_end,
+            preserve_lead_in, preserve_lead_out)
         if not phrase_item then return end
         temporary_phrase_item = true
     end
@@ -1257,14 +1345,20 @@ local function backfill_loop_source(track, item, scene, phrase_start, phrase_end
     while dest > scene.pos + 1e-9 do
         local chunk = linked_chunk(phrase_item)
         if not chunk then break end
-        local tile_start = dest - unit
+        local phrase_item_pos = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
+        local tile_start = dest - unit + phrase_item_pos - phrase_start
         local tile = reaper.AddMediaItemToTrack(track)
         reaper.SetItemStateChunk(tile, chunk, false)
         reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_start)
+        local retained_tile = tile
         if tile_start < scene.pos - 1e-9 then
             local right = reaper.SplitMediaItem(tile, scene.pos)
-            if right then reaper.DeleteTrackMediaItem(track, tile) end
+            if right then
+                reaper.DeleteTrackMediaItem(track, tile)
+                retained_tile = right
+            end
         end
+        phrase_items[#phrase_items + 1] = retained_tile
         dest = math.max(scene.pos, dest - unit)
     end
     if temporary_phrase_item then
@@ -1331,14 +1425,18 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         apply_midi_boundary_notes(boundary_notes, item, phrase_start)
     end
 
-    if not cfg.record_lead_out and recorded_end > phrase_end + 1e-9 then
+    local take = reaper.GetActiveTake(item)
+    local is_midi = take and reaper.TakeIsMIDI(take)
+    if is_midi then
+        if not cfg.record_lead_out then
+            remove_midi_notes_starting_at_or_after(take, phrase_end)
+        end
+    elseif not cfg.record_lead_out and recorded_end > phrase_end + 1e-9 then
         local right = reaper.SplitMediaItem(item, phrase_end)
         if right then reaper.DeleteTrackMediaItem(track, right) end
         recorded_end = math.min(recorded_end, phrase_end)
     end
 
-    local take = reaper.GetActiveTake(item)
-    local is_midi = take and reaper.TakeIsMIDI(take)
     local desired_end = phrase_end
     local audio_crossfade = 0
     if cfg.record_lead_out then
@@ -1352,9 +1450,8 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         end
     end
     if is_midi then
-        if cfg.record_lead_out then
-            remove_midi_notes_starting_at_or_after(take, phrase_end)
-        end
+        desired_end = math.max(desired_end,
+            midi_note_end_after_boundary(take, phrase_end) or phrase_end)
         reaper.SetMediaItemInfo_Value(item, "B_LOOPSRC", 0)
         local item_end = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
             + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
@@ -1374,11 +1471,12 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
 
     local lead_in = cfg.record_lead_in and math.max(0, phrase_start - pos) or 0
     local unit = phrase_end - phrase_start
+    local phrase_items = { item }
     if cfg.record_backfill then
-        backfill_loop_source(track, item, scene, phrase_start, phrase_end)
+        backfill_loop_source(track, item, scene, phrase_start, phrase_end,
+            cfg.record_lead_in, cfg.record_lead_out, phrase_items)
     end
     local dest_anchor = phrase_end
-    local phrase_items = { item }
     while dest_anchor < scene.rgnend - 1e-9 do
         local chunk = linked_chunk(item)
         if not chunk then break end
@@ -1398,8 +1496,21 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         end
         dest_anchor = dest_anchor + unit
     end
-    if cfg.record_lead_out and is_midi then
-        glue_phrase_items(phrase_items)
+    local crosses_phrase_boundary = is_midi
+        and midi_note_end_after_boundary(take, phrase_end) ~= nil
+    if is_midi and (cfg.record_lead_out or crosses_phrase_boundary) then
+        local glued = glue_phrase_items(phrase_items)
+        if crosses_phrase_boundary and glued then
+            local first_boundary = phrase_start
+            while first_boundary - unit >= scene.pos - 1e-9 do
+                first_boundary = first_boundary - unit
+            end
+            local boundary = first_boundary
+            while boundary <= scene.rgnend + 1e-9 do
+                merge_midi_notes_crossing_boundary(reaper.GetActiveTake(glued), boundary)
+                boundary = boundary + unit
+            end
+        end
     end
     return true
 end

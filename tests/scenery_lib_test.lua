@@ -644,7 +644,17 @@ local tests = {
                     right.take = { is_midi = target.take.is_midi, notes = {} }
                     right.take.item = right
                     local offset = (split_pos - target.pos) * 100
+                    local left_notes = {}
                     for _, note in ipairs(target.take.notes or {}) do
+                        if note.start_ppq < offset then
+                            left_notes[#left_notes + 1] = {
+                                selected = note.selected, muted = note.muted,
+                                start_ppq = note.start_ppq,
+                                end_ppq = math.min(note.end_ppq, offset),
+                                channel = note.channel, pitch = note.pitch,
+                                velocity = note.velocity,
+                            }
+                        end
                         if note.end_ppq > offset then
                             right.take.notes[#right.take.notes + 1] = {
                                 selected = note.selected, muted = note.muted,
@@ -655,6 +665,7 @@ local tests = {
                             }
                         end
                     end
+                    target.take.notes = left_notes
                 end
                 target.len = split_pos - target.pos
                 track.items[#track.items + 1] = right
@@ -723,20 +734,57 @@ local tests = {
                 assert_equal(command_id, 40362)
                 if not perform_glue then return end
                 local start_pos, end_pos = math.huge, -math.huge
+                local source_notes = {}
+                local has_midi_take = false
                 for _, candidate in ipairs(track.items) do
                     if candidate.selected then
                         start_pos = math.min(start_pos, candidate.pos)
                         end_pos = math.max(end_pos, candidate.pos + candidate.len)
+                        if candidate.take and candidate.take.is_midi then
+                            has_midi_take = true
+                            for _, note in ipairs(candidate.take.notes or {}) do
+                                local note_start = candidate.pos + note.start_ppq / 100
+                                local note_end = candidate.pos + note.end_ppq / 100
+                                source_notes[#source_notes + 1] = {
+                                    selected = note.selected,
+                                    muted = note.muted,
+                                    channel = note.channel,
+                                    pitch = note.pitch,
+                                    velocity = note.velocity,
+                                    project_start = note_start,
+                                    project_end = note_end,
+                                }
+                            end
+                        end
                     end
                 end
                 for index = #track.items, 1, -1 do
                     if track.items[index].selected then table.remove(track.items, index) end
                 end
-                track.items[#track.items + 1] = {
+                local glued_item = {
                     pos = start_pos,
                     len = end_pos - start_pos,
                     selected = true,
                 }
+                if has_midi_take then
+                    local merged_notes = {}
+                    for _, note in ipairs(source_notes) do
+                        merged_notes[#merged_notes + 1] = {
+                            selected = note.selected,
+                            muted = note.muted,
+                            start_ppq = (note.project_start - start_pos) * 100,
+                            end_ppq = (note.project_end - start_pos) * 100,
+                            channel = note.channel,
+                            pitch = note.pitch,
+                            velocity = note.velocity,
+                            project_start = note.project_start,
+                            project_end = note.project_end,
+                        }
+                    end
+                    glued_item.take = { is_midi = true, notes = merged_notes }
+                    glued_item.take.item = glued_item
+                end
+                track.items[#track.items + 1] = glued_item
             end
 
             with_fake_reaper(fake, function()
@@ -750,7 +798,6 @@ local tests = {
                 assert_equal(track.items[2].len, 16)
                 assert_equal(track.items[3].pos, 28)
                 assert_equal(track.items[4].pos, 44)
-
                 track.items = { item }
                 fail_split_at = 4
                 processed = scenery.apply_loop_source_to_new_items({}, {
@@ -759,8 +806,8 @@ local tests = {
                 })
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 4)
-                assert_equal(track.items[2].pos, 0)
-                assert_equal(track.items[2].len, 16)
+                assert_equal(track.items[2].pos, -4)
+                assert_equal(track.items[2].len, 20)
             end)
 
             fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
@@ -913,6 +960,9 @@ local tests = {
             fake.MIDI_GetPPQPosFromProjTime = function(take, time)
                 return (time - take.item.pos) * 100
             end
+            fake.MIDI_GetProjTimeFromPPQPos = function(take, ppq)
+                return take.item.pos + ppq / 100
+            end
             fake.MIDI_InsertNote = function(take, selected, muted, start_ppq, end_ppq,
                 channel, pitch, velocity)
                 take.notes[#take.notes + 1] = {
@@ -928,6 +978,10 @@ local tests = {
             end
             fake.MIDI_SetNote = function(take, index, _, _, _, end_ppq)
                 take.notes[index + 1].end_ppq = end_ppq
+                return true
+            end
+            fake.MIDI_DeleteNote = function(take, index)
+                table.remove(take.notes, index + 1)
                 return true
             end
             fake.MIDI_Sort = function(take)
@@ -1045,6 +1099,77 @@ local tests = {
                 assert_equal(track.items[2].take.notes[1].end_ppq, 100)
                 assert_equal(track.items[2].take.notes[2].start_ppq, 200)
             end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_backfill"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
+            local phrase_tail_take = {
+                is_midi = true,
+                notes = {
+                    { selected = false, muted = false, start_ppq = 1900, end_ppq = 2100,
+                        channel = 0, pitch = 65, velocity = 100 },
+                },
+            }
+            local phrase_tail_item = {
+                guid = "{phrase-tail-note}", pos = 12, len = 20, take = phrase_tail_take,
+            }
+            phrase_tail_take.item = phrase_tail_item
+            track.items = { phrase_tail_item }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                assert_equal(track.items[2].pos, 0)
+                assert_equal(track.items[2].len, 17)
+                assert_equal(#track.items[2].take.notes, 1)
+                assert_equal(track.items[2].take.notes[1].end_ppq, 1700)
+                assert_equal(track.items[3].pos, 28)
+                assert_equal(track.items[3].len, 21)
+                assert_equal(track.items[3].take.notes[1].end_ppq, 2100)
+                assert_equal(track.items[4].pos, 44)
+                assert_equal(track.items[4].len, 21)
+                assert_equal(track.items[4].take.notes[1].end_ppq, 2100)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_end_of_bar"] = "0"
+            local crossing_phrase_take = {
+                is_midi = true,
+                notes = {
+                    { selected = false, muted = false, start_ppq = 1150, end_ppq = 2850,
+                        channel = 0, pitch = 65, velocity = 100 },
+                },
+            }
+            local crossing_phrase_item = {
+                guid = "{backfill-note-crosses-both-boundaries}",
+                pos = 20,
+                len = 30,
+                take = crossing_phrase_take,
+            }
+            crossing_phrase_take.item = crossing_phrase_item
+            track.items = { crossing_phrase_item }
+            perform_glue = true
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 1)
+                assert_equal(track.items[1].pos, 0)
+                local crossing_note_found = false
+                for _, note in ipairs(track.items[1].take.notes) do
+                    local note_start = track.items[1].pos + note.start_ppq / 100
+                    local note_end = track.items[1].pos + note.end_ppq / 100
+                    if math.abs(note_start) < 1e-9
+                        and math.abs(note_end - 64.5) < 1e-9 then
+                        crossing_note_found = true
+                    end
+                end
+                assert_equal(crossing_note_found, true)
+            end)
         end,
     },
     {
@@ -1092,6 +1217,7 @@ local tests = {
             fake.MIDI_CountEvts = function(take)
                 return true, take.notes or 0, take.cc or 0, take.text or 0
             end
+            fake.MIDI_GetNote = function() return false end
             fake.SetActiveTake = function(take) item.active_take = take end
             fake.DeleteTake = function(take)
                 for index, candidate in ipairs(item.takes) do
