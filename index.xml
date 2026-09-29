@@ -6,8 +6,8 @@
 				<description><![CDATA[Scene-based looping toolkit for REAPER with a launcher panel, scene actions, a follow-along engine, and bar-quantized recording.]]></description>
 				<link rel="website">https://github.com/infeasibler/reaperplugins</link>
 			</metadata>
-			<version name="0.5.0" author="infeasibler" time="2026-09-27T00:00:00Z">
-				<changelog><![CDATA[- Added persistent per-track copy exclusions in the Launcher; excluded tracks keep their destination items, independently of occupied-track skipping.]]></changelog>
+			<version name="0.5.1" author="infeasibler" time="2026-09-29T00:00:00Z">
+				<changelog><![CDATA[- Preserve MIDI note continuity across repeated phrase boundaries, including lead-in, backfill, and lead-out overlaps.]]></changelog>
 				<source main="main" type="script" file="Scenery - Launcher.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Launcher.lua</source>
 				<source main="main" type="script" file="Scenery - New scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene.lua</source>
 				<source main="main" type="script" file="Scenery - New scene (custom bars).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene%20(custom%20bars).lua</source>
