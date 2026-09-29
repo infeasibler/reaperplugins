@@ -110,6 +110,25 @@ local function measure_offset_time(measure, bars)
     return reaper.TimeMap2_QNToTime(0, start_qn + (end_qn - start_qn) * fraction)
 end
 
+local function offset_time_by_bars(time, bars)
+    local measure = M.measure_at(time)
+    local measure_start = M.measure_start_time(measure)
+    local measure_end = M.measure_start_time(measure + 1)
+    local start_qn = reaper.TimeMap2_timeToQN(0, measure_start)
+    local end_qn = reaper.TimeMap2_timeToQN(0, measure_end)
+    local position_qn = reaper.TimeMap2_timeToQN(0, time)
+    local measure_position = measure + (position_qn - start_qn) / (end_qn - start_qn)
+    local target_position = measure_position - math.max(0, tonumber(bars) or 0)
+    local target_measure = math.floor(target_position)
+    local target_fraction = target_position - target_measure
+    local target_start = M.measure_start_time(target_measure)
+    local target_end = M.measure_start_time(target_measure + 1)
+    local target_start_qn = reaper.TimeMap2_timeToQN(0, target_start)
+    local target_end_qn = reaper.TimeMap2_timeToQN(0, target_end)
+    return reaper.TimeMap2_QNToTime(0,
+        target_start_qn + (target_end_qn - target_start_qn) * target_fraction)
+end
+
 -- ----------------------------------------------------------- scene model
 
 -- Every region is treated as a scene, whatever it's named - the user can
@@ -1358,6 +1377,12 @@ local function backfill_loop_source(track, item, scene, phrase_start, phrase_end
                 retained_tile = right
             end
         end
+        if preserve_lead_in then
+            local anchor = dest - unit
+            local retained_pos = reaper.GetMediaItemInfo_Value(retained_tile, "D_POSITION")
+            reaper.SetMediaItemInfo_Value(retained_tile, "D_SNAPOFFSET",
+                math.max(0, anchor - retained_pos))
+        end
         phrase_items[#phrase_items + 1] = retained_tile
         dest = math.max(scene.pos, dest - unit)
     end
@@ -1411,6 +1436,14 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
                 - math.ceil(cfg.record_lead_out_bars or 0.5))
         end
         phrase_end = math.max(phrase_end, capture_end)
+    else
+        local loop_source_end = recorded_end
+        if cfg.record_lead_out then
+            loop_source_end = offset_time_by_bars(loop_source_end,
+                cfg.record_lead_out_bars or 0.5)
+        end
+        phrase_end = math.max(M.bars_to_time(phrase_start, 1),
+            M.snap_to_bar(loop_source_end, "next", 0.2))
     end
     if phrase_end <= phrase_start + 1e-9 then return false end
 
@@ -1470,6 +1503,9 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
     reaper.UpdateItemInProject(item)
 
     local lead_in = cfg.record_lead_in and math.max(0, phrase_start - pos) or 0
+    if lead_in > 0 then
+        reaper.SetMediaItemInfo_Value(item, "D_SNAPOFFSET", lead_in)
+    end
     local unit = phrase_end - phrase_start
     local phrase_items = { item }
     if cfg.record_backfill then
@@ -1485,6 +1521,9 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         phrase_items[#phrase_items + 1] = tile
         local tile_pos = dest_anchor - lead_in
         reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_pos)
+        if lead_in > 0 then
+            reaper.SetMediaItemInfo_Value(tile, "D_SNAPOFFSET", lead_in)
+        end
         if audio_crossfade > 0 and not is_midi then
             reaper.SetMediaItemInfo_Value(tile, "D_FADEINLEN", audio_crossfade)
             reaper.SetMediaItemInfo_Value(tile, "D_FADEOUTLEN", audio_crossfade)

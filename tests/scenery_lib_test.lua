@@ -610,6 +610,7 @@ local tests = {
             fake.GetMediaItemInfo_Value = function(target, key)
                 if key == "D_POSITION" then return target.pos end
                 if key == "D_LENGTH" then return target.len end
+                if key == "D_SNAPOFFSET" then return target.snap_offset or 0 end
             end
             fake.TimeMap2_timeToBeats = function(_, time)
                 return 0, math.floor(time / 4), 0, time, 0
@@ -703,6 +704,7 @@ local tests = {
             end
             fake.SetMediaItemInfo_Value = function(target, key, value)
                 if key == "D_POSITION" then target.pos = value end
+                if key == "D_SNAPOFFSET" then target.snap_offset = value end
             end
             fake.GetActiveTake = function(target) return target.take end
             fake.CountTakes = function() return 0 end
@@ -794,10 +796,14 @@ local tests = {
                 })
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 4)
+                assert_equal(track.items[1].snap_offset, 4)
                 assert_equal(track.items[2].pos, 0)
                 assert_equal(track.items[2].len, 16)
+                assert_equal(track.items[2].snap_offset, 0)
                 assert_equal(track.items[3].pos, 28)
+                assert_equal(track.items[3].snap_offset, 4)
                 assert_equal(track.items[4].pos, 44)
+                assert_equal(track.items[4].snap_offset, 4)
                 track.items = { item }
                 fail_split_at = 4
                 processed = scenery.apply_loop_source_to_new_items({}, {
@@ -1169,6 +1175,55 @@ local tests = {
                     end
                 end
                 assert_equal(crossing_note_found, true)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_backfill"] = "0"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "0"
+            local two_bar_audio = { guid = "{two-bar-audio}", pos = 0, len = 8 }
+            track.items = { two_bar_audio }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 32,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                for index, expected_pos in ipairs({ 0, 8, 16, 24 }) do
+                    assert_equal(track.items[index].pos, expected_pos)
+                    assert_equal(track.items[index].len, 8)
+                end
+            end)
+
+            two_bar_audio = { guid = "{quantized-start-two-bar-audio}", pos = 4, len = 20 }
+            track.items = { two_bar_audio }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 48,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                for index, expected_pos in ipairs({ 16, 24, 32, 40 }) do
+                    assert_equal(track.items[index].pos, expected_pos)
+                    assert_equal(track.items[index].len, 8)
+                end
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
+            two_bar_audio = { guid = "{two-bar-audio-lead-out}", pos = 0, len = 10 }
+            track.items = { two_bar_audio }
+            with_fake_reaper(fake, function()
+                local processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0,
+                    rgnend = 32,
+                })
+                assert_equal(processed, 1)
+                assert_equal(#track.items, 4)
+                for index, expected_pos in ipairs({ 0, 8, 16, 24 }) do
+                    assert_equal(track.items[index].pos, expected_pos)
+                    assert_equal(track.items[index].len, 10)
+                end
             end)
         end,
     },
