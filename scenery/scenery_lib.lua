@@ -37,6 +37,7 @@ function M.get_config()
         skip_track_guids    = ext_get("skip_track_guids", ""),
         auto_repeat         = ext_get("auto_repeat", "1") == "1",
         insert_after_current = ext_get("insert_after_current", "0") == "1",
+        copy_automation     = ext_get("copy_automation", "1") == "1",
         confirm_destructive = ext_get("confirm_destructive", "1") == "1",
         poll_interval       = tonumber(ext_get("poll_interval", "0.008")) or 0.008,
     }
@@ -1088,6 +1089,35 @@ local function shift_project_time(start, amount)
         local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
         reaper.SetMediaItemInfo_Value(item, "D_POSITION", pos + amount)
     end
+
+    local tracks = {}
+    for track_index = 0, reaper.CountTracks(0) - 1 do
+        tracks[#tracks + 1] = reaper.GetTrack(0, track_index)
+    end
+    local master = reaper.GetMasterTrack(0)
+    if master then tracks[#tracks + 1] = master end
+    for _, track in ipairs(tracks) do
+        for envelope_index = 0, reaper.CountTrackEnvelopes(track) - 1 do
+            local envelope = reaper.GetTrackEnvelope(track, envelope_index)
+            for point_index = reaper.CountEnvelopePointsEx(envelope, -1) - 1, 0, -1 do
+                local _, point_time = reaper.GetEnvelopePointEx(envelope, -1, point_index)
+                if point_time >= start - 1e-9 then
+                    reaper.SetEnvelopePointEx(envelope, -1, point_index, point_time + amount,
+                        nil, nil, nil, nil, true)
+                end
+            end
+            reaper.Envelope_SortPointsEx(envelope, -1)
+
+            local automation_items = automation_snapshot(envelope)
+            for _, item in ipairs(automation_items) do
+                if item.D_POSITION >= start - 1e-9 then
+                    local index = find_automation_item(envelope, item)
+                    reaper.GetSetAutomationItemInfo(envelope, index, "D_POSITION", item.D_POSITION + amount, true)
+                    item.D_POSITION = item.D_POSITION + amount
+                end
+            end
+        end
+    end
 end
 
 function M.delete_scene_and_shift(scene)
@@ -1197,6 +1227,169 @@ local function occupied_tracks_in_range(start_time, end_time)
     return occupied
 end
 
+local function snapshot_envelope_for_copy(envelope, start_time, end_time)
+    local snapshot = { points = {}, automation_items = {} }
+    for index = 0, reaper.CountEnvelopePointsEx(envelope, -1) - 1 do
+        local ok, time, value, shape, tension, selected = reaper.GetEnvelopePointEx(envelope, -1, index)
+        if not ok then error("Could not read a track automation point.", 0) end
+        if time >= start_time - 1e-9 and time < end_time - 1e-9 then
+            snapshot.points[#snapshot.points + 1] = {
+                time = time, value = value, shape = shape, tension = tension, selected = selected,
+            }
+        end
+    end
+    for index = 0, reaper.CountAutomationItems(envelope) - 1 do
+        local item = {}
+        for _, property in ipairs(automation_properties) do
+            item[property] = reaper.GetSetAutomationItemInfo(envelope, index, property, 0, false)
+        end
+        if item.D_POSITION < end_time - 1e-9 and item.D_POSITION + item.D_LENGTH > start_time + 1e-9 then
+            item.points = {}
+            for point_index = 0, reaper.CountEnvelopePointsEx(envelope, index) - 1 do
+                local ok, time, value, shape, tension, selected =
+                    reaper.GetEnvelopePointEx(envelope, index, point_index)
+                if not ok then error("Could not read an automation-item point.", 0) end
+                item.points[#item.points + 1] = {
+                    time = time, value = value, shape = shape, tension = tension, selected = selected,
+                }
+            end
+            snapshot.automation_items[#snapshot.automation_items + 1] = item
+        end
+    end
+    return snapshot
+end
+
+local function snapshot_project_automation(start_time, end_time)
+    local tracks = {}
+    for index = 0, reaper.CountTracks(0) - 1 do
+        tracks[#tracks + 1] = reaper.GetTrack(0, index)
+    end
+    local master = reaper.GetMasterTrack(0)
+    if master then tracks[#tracks + 1] = master end
+
+    local snapshots = {}
+    for _, track in ipairs(tracks) do
+        local envelopes = {}
+        for index = 0, reaper.CountTrackEnvelopes(track) - 1 do
+            local envelope = reaper.GetTrackEnvelope(track, index)
+            local snapshot = snapshot_envelope_for_copy(envelope, start_time, end_time)
+            if #snapshot.points > 0 or #snapshot.automation_items > 0 then
+                envelopes[#envelopes + 1] = { envelope = envelope, snapshot = snapshot }
+            end
+        end
+        if #envelopes > 0 then snapshots[#snapshots + 1] = { track = track, envelopes = envelopes } end
+    end
+    return snapshots
+end
+
+local function set_automation_item_properties(envelope, index, item, position, length, start_offset)
+    for _, property in ipairs({ "D_PLAYRATE", "D_BASELINE", "D_AMPLITUDE", "D_LOOPSRC", "D_UISEL", "D_MUTE" }) do
+        reaper.GetSetAutomationItemInfo(envelope, index, property, item[property], true)
+    end
+    reaper.GetSetAutomationItemInfo(envelope, index, "D_STARTOFFS", start_offset, true)
+    reaper.GetSetAutomationItemInfo(envelope, index, "D_LENGTH", length, true)
+    reaper.GetSetAutomationItemInfo(envelope, index, "D_POSITION", position, true)
+end
+
+local function remove_automation_items_in_range(envelope, start_time, end_time)
+    local items = automation_snapshot(envelope)
+    for index = #items, 1, -1 do
+        local item = items[index]
+        local position = item.D_POSITION
+        local finish = position + item.D_LENGTH
+        if position < end_time - 1e-9 and finish > start_time + 1e-9 then
+            local left_length = math.max(0, start_time - position)
+            local right_length = math.max(0, finish - end_time)
+            if left_length > 1e-9 then
+                local item_index = find_automation_item(envelope, item)
+                set_automation_item_properties(envelope, item_index, item, position, left_length, item.D_STARTOFFS)
+            elseif right_length <= 1e-9 then
+                reaper.DeleteAutomationItem(envelope, find_automation_item(envelope, item))
+            end
+            if right_length > 1e-9 then
+                local right_position = end_time
+                local right_start_offset = item.D_STARTOFFS + (right_position - position) * item.D_PLAYRATE
+                if left_length > 1e-9 then
+                    local right_index = reaper.InsertAutomationItem(envelope, item.D_POOL_ID, right_position, right_length)
+                    if right_index < 0 then error("REAPER refused an automation-item split.", 0) end
+                    set_automation_item_properties(envelope, right_index, item, right_position, right_length,
+                        right_start_offset)
+                else
+                    local item_index = find_automation_item(envelope, item)
+                    set_automation_item_properties(envelope, item_index, item, right_position, right_length,
+                        right_start_offset)
+                end
+            end
+        end
+    end
+end
+
+local function clear_automation_points_in_range(envelope, start_time, end_time)
+    for index = reaper.CountEnvelopePointsEx(envelope, -1) - 1, 0, -1 do
+        local _, time = reaper.GetEnvelopePointEx(envelope, -1, index)
+        if time >= start_time - 1e-9 and time < end_time - 1e-9 then
+            if not reaper.DeleteEnvelopePointEx(envelope, -1, index) then
+                error("Could not replace track automation.", 0)
+            end
+        end
+    end
+end
+
+local function prepare_automation_copy(snapshots, start_time, end_time, skip_tracks)
+    for _, track_snapshot in ipairs(snapshots) do
+        if not skip_tracks[track_snapshot.track] then
+            for _, envelope_snapshot in ipairs(track_snapshot.envelopes) do
+                clear_automation_points_in_range(envelope_snapshot.envelope, start_time, end_time)
+                remove_automation_items_in_range(envelope_snapshot.envelope, start_time, end_time)
+            end
+        end
+    end
+end
+
+local function copy_automation_tile(snapshots, source_start, source_end, dest_start, dest_end, skip_tracks,
+    link_pools)
+    for _, track_snapshot in ipairs(snapshots) do
+        if not skip_tracks[track_snapshot.track] then
+            for _, envelope_snapshot in ipairs(track_snapshot.envelopes) do
+                local envelope = envelope_snapshot.envelope
+                for _, point in ipairs(envelope_snapshot.snapshot.points) do
+                    local position = dest_start + point.time - source_start
+                    if position < dest_end - 1e-9 then
+                        reaper.InsertEnvelopePointEx(envelope, -1, position, point.value, point.shape,
+                            point.tension, point.selected or false, true)
+                    end
+                end
+                for _, item in ipairs(envelope_snapshot.snapshot.automation_items) do
+                    local source_item_start = item.D_POSITION
+                    local source_item_end = source_item_start + item.D_LENGTH
+                    local clipped_start = math.max(source_item_start, source_start)
+                    local clipped_end = math.min(source_item_end, source_end)
+                    local position = dest_start + clipped_start - source_start
+                    local length = math.min(clipped_end - clipped_start, dest_end - position)
+                    if length > 1e-9 then
+                        local pool_id = link_pools and item.D_POOL_ID or -1
+                        local index = reaper.InsertAutomationItem(envelope, pool_id, position, length)
+                        if index < 0 then error("REAPER refused to copy an automation item.", 0) end
+                        local start_offset = item.D_STARTOFFS + (clipped_start - source_item_start) * item.D_PLAYRATE
+                        set_automation_item_properties(envelope, index, item, position, length, start_offset)
+                        if not link_pools then
+                            for _, point in ipairs(item.points) do
+                                if point.time >= clipped_start - 1e-9 and point.time < clipped_start + length - 1e-9 then
+                                    local point_time = position + point.time - clipped_start
+                                    reaper.InsertEnvelopePointEx(envelope, index, point_time, point.value,
+                                        point.shape, point.tension, point.selected or false, true)
+                                end
+                            end
+                            reaper.Envelope_SortPointsEx(envelope, index)
+                        end
+                    end
+                end
+                reaper.Envelope_SortPointsEx(envelope, -1)
+            end
+        end
+    end
+end
+
 local function clear_items_in_range(start_time, end_time, preserved_tracks)
     local incoming_crossfades = {}
     for track_index = 0, reaper.CountTracks(0) - 1 do
@@ -1243,6 +1436,7 @@ function M.duplicate_scene(source, copy_fn)
     local bars = cfg.default_bars
     local source_items = source_items_in_range(source.pos, source.rgnend)
     local source_crossfades = crossfades_at_boundary(source.rgnend)
+    local automation = cfg.copy_automation and snapshot_project_automation(source.pos, source.rgnend) or {}
     local scene = cfg.insert_after_current and M.insert_scene_after(source, bars) or M.create_scene(bars)
     local unit = source.rgnend - source.pos
     copy_fn = copy_fn or M.copy_items
@@ -1261,9 +1455,13 @@ function M.duplicate_scene(source, copy_fn)
     else
         incoming_crossfades = clear_items_in_range(scene.pos, scene.rgnend, skip_tracks)
     end
+    prepare_automation_copy(automation, scene.pos, scene.rgnend, skip_tracks)
+    local link_automation_pools = copy_fn == M.copy_items_linked
     if unit <= 1e-9 then
         copy_fn(source.pos, source.rgnend, scene.pos, scene.rgnend, skip_tracks,
             incoming_crossfades, source_items)
+        copy_automation_tile(automation, source.pos, source.rgnend, scene.pos, scene.rgnend, skip_tracks,
+            link_automation_pools)
         return scene
     end
     local dest = scene.pos
@@ -1273,6 +1471,8 @@ function M.duplicate_scene(source, copy_fn)
         local crossfades = first_tile and incoming_crossfades
             or crossfades_for_tile(source_crossfades, source.rgnend, dest)
         copy_fn(source.pos, source.rgnend, dest, tile_end, skip_tracks, crossfades, source_items)
+        copy_automation_tile(automation, source.pos, source.rgnend, dest, tile_end, skip_tracks,
+            link_automation_pools)
         dest = dest + unit
         first_tile = false
     end

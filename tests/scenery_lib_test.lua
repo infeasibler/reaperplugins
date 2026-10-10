@@ -42,6 +42,9 @@ local function make_state_fake()
         SetExtState = function(section, key, value)
             values[section .. ":" .. key] = value
         end,
+        GetMasterTrack = function() return nil end,
+        CountTrackEnvelopes = function(track) return #(track.envelopes or {}) end,
+        GetTrackEnvelope = function(track, index) return track.envelopes[index + 1] end,
         DeleteExtState = function(section, key)
             values[section .. ":" .. key] = nil
         end,
@@ -89,6 +92,64 @@ local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout, ski
     end
     fake.CountTracks = function() return 1 end
     fake.GetTrack = function() return track end
+    fake.GetMasterTrack = function() return nil end
+    fake.CountTrackEnvelopes = function(target) return #(target.envelopes or {}) end
+    fake.GetTrackEnvelope = function(target, index) return target.envelopes[index + 1] end
+    fake.CountEnvelopePointsEx = function(envelope, autoitem_index)
+        if autoitem_index == -1 then return #envelope.points end
+        return #envelope.items[autoitem_index + 1].points
+    end
+    fake.GetEnvelopePointEx = function(envelope, autoitem_index, index)
+        local point = autoitem_index == -1 and envelope.points[index + 1]
+            or envelope.items[autoitem_index + 1].points[index + 1]
+        if not point then return false end
+        return true, point.time, point.value, point.shape or 0, point.tension or 0, point.selected or false
+    end
+    fake.InsertEnvelopePointEx = function(envelope, autoitem_index, time, value, shape, tension, selected)
+        local points = autoitem_index == -1 and envelope.points or envelope.items[autoitem_index + 1].points
+        points[#points + 1] = {
+            time = time, value = value, shape = shape, tension = tension, selected = selected,
+        }
+        return true
+    end
+    fake.DeleteEnvelopePointEx = function(envelope, autoitem_index, index)
+        table.remove(autoitem_index == -1 and envelope.points or envelope.items[autoitem_index + 1].points,
+            index + 1)
+        return true
+    end
+    fake.SetEnvelopePointEx = function(envelope, autoitem_index, index, time)
+        local points = autoitem_index == -1 and envelope.points or envelope.items[autoitem_index + 1].points
+        points[index + 1].time = time
+        return true
+    end
+    fake.Envelope_SortPointsEx = function(envelope, autoitem_index)
+        local points = autoitem_index == -1 and envelope.points or envelope.items[autoitem_index + 1].points
+        table.sort(points, function(left, right) return left.time < right.time end)
+        return true
+    end
+    fake.CountAutomationItems = function(envelope) return #envelope.items end
+    fake.GetSetAutomationItemInfo = function(envelope, index, property, value, set_value)
+        local item = envelope.items[index + 1]
+        if set_value then item[property] = value end
+        return item[property] or 0
+    end
+    fake.InsertAutomationItem = function(envelope, pool_id, position, length)
+        if pool_id < 0 then
+            envelope.next_pool_id = (envelope.next_pool_id or 100) + 1
+            pool_id = envelope.next_pool_id
+        end
+        local item = {
+            D_POOL_ID = pool_id, D_POSITION = position, D_LENGTH = length, D_STARTOFFS = 0,
+            D_PLAYRATE = 1, D_BASELINE = 0, D_AMPLITUDE = 1, D_LOOPSRC = 0,
+            D_UISEL = 0, D_MUTE = 0, points = {},
+        }
+        envelope.items[#envelope.items + 1] = item
+        return #envelope.items - 1
+    end
+    fake.DeleteAutomationItem = function(envelope, index)
+        table.remove(envelope.items, index + 1)
+        return true
+    end
     track.guid = "{track-1}"
     fake.GetTrackGUID = function(target) return target.guid end
     fake.CountTrackMediaItems = function(target) return #target.items end
@@ -142,6 +203,27 @@ local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout, ski
         end
     end
     return fake, track, lead_in, destination_item_before, destination_item, audio_first, audio_leadout
+end
+
+local function add_duplicate_automation(fake, track)
+    local envelope = {
+        points = {
+            { time = 0, value = 0.1 }, { time = 2, value = 0.5 },
+            { time = 5, value = 0.9 }, { time = 12, value = 0.2 },
+        },
+        items = {
+            { D_POOL_ID = 7, D_POSITION = 1, D_LENGTH = 1, D_STARTOFFS = 0,
+                D_PLAYRATE = 1, D_BASELINE = 0, D_AMPLITUDE = 1, D_LOOPSRC = 0,
+                D_UISEL = 0, D_MUTE = 0,
+                points = { { time = 1, value = 0.2 }, { time = 1.5, value = 0.8 } } },
+            { D_POOL_ID = 8, D_POSITION = 5, D_LENGTH = 1, D_STARTOFFS = 0,
+                D_PLAYRATE = 1, D_BASELINE = 0, D_AMPLITUDE = 1, D_LOOPSRC = 0,
+                D_UISEL = 0, D_MUTE = 0, points = {} },
+        },
+    }
+    local unrelated_envelope = { points = { { time = 5, value = 0.7 } }, items = {} }
+    track.envelopes = { envelope, unrelated_envelope }
+    return envelope, unrelated_envelope
 end
 
 local function make_reorder_fake()
@@ -464,6 +546,8 @@ local tests = {
                 end,
                 CountTracks = function() return 1 end,
                 GetTrack = function() return track end,
+                GetMasterTrack = function() return nil end,
+                CountTrackEnvelopes = function() return 0 end,
                 CountTrackMediaItems = function(target) return #target.items end,
                 GetTrackMediaItem = function(target, index) return target.items[index + 1] end,
                 GetMediaItemInfo_Value = function(item, key)
@@ -532,6 +616,8 @@ local tests = {
                 end,
                 CountTracks = function() return 1 end,
                 GetTrack = function() return track end,
+                GetMasterTrack = function() return nil end,
+                CountTrackEnvelopes = function() return 0 end,
                 CountTrackMediaItems = function(target) return #target.items end,
                 GetTrackMediaItem = function(target, index) return target.items[index + 1] end,
                 GetMediaItemInfo_Value = function(item, key)
@@ -763,6 +849,86 @@ local tests = {
                 assert_equal(take2.notes[1].start_ppq, 0)
                 assert_equal(take2.notes[1].end_ppq, 25)
                 assert_equal(#take3.notes, 1)
+            end)
+        end,
+    },
+    {
+        name = "clone copies envelope points and independent automation items by default",
+        run = function()
+            local fake, track = make_duplicate_fake(false)
+            local envelope, unrelated_envelope = add_duplicate_automation(fake, track)
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.get_config().copy_automation, true)
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 })
+
+                local copied_points = {}
+                for _, point in ipairs(envelope.points) do
+                    copied_points[point.time] = point.value
+                end
+                assert_equal(copied_points[0], 0.1)
+                assert_equal(copied_points[2], 0.5)
+                assert_equal(copied_points[4], 0.1)
+                assert_equal(copied_points[6], 0.5)
+                assert_equal(copied_points[8], 0.1)
+                assert_equal(copied_points[10], 0.5)
+                assert_equal(copied_points[12], 0.2, "automation after the scene should remain")
+                assert_equal(copied_points[5], nil, "destination automation should be overwritten")
+                assert_equal(unrelated_envelope.points[1].time, 5,
+                    "automation for a different parameter should remain")
+
+                assert_equal(#envelope.items, 3)
+                assert_equal(envelope.items[1].D_POSITION, 1)
+                assert_equal(envelope.items[2].D_POSITION, 5)
+                assert_equal(envelope.items[3].D_POSITION, 9)
+                assert(envelope.items[2].D_POOL_ID ~= 7)
+                assert(envelope.items[3].D_POOL_ID ~= 7)
+                assert(envelope.items[2].D_POOL_ID ~= envelope.items[3].D_POOL_ID)
+                assert_equal(#envelope.items[2].points, 2)
+                assert_equal(envelope.items[2].points[1].time, 5)
+                assert_equal(envelope.items[2].points[2].time, 5.5)
+            end)
+        end,
+    },
+    {
+        name = "copy keeps automation-item pools linked and can be disabled",
+        run = function()
+            local fake, track = make_duplicate_fake(false)
+            local envelope = add_duplicate_automation(fake, track)
+            with_fake_reaper(fake, function()
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 }, scenery.copy_items_linked)
+                assert_equal(#envelope.items, 3)
+                assert_equal(envelope.items[2].D_POOL_ID, 7)
+                assert_equal(envelope.items[3].D_POOL_ID, 7)
+            end)
+
+            local disabled_fake, disabled_track = make_duplicate_fake(false)
+            local disabled_envelope = add_duplicate_automation(disabled_fake, disabled_track)
+            disabled_fake.values[scenery.EXT_SECTION .. ":copy_automation"] = "0"
+            with_fake_reaper(disabled_fake, function()
+                assert_equal(scenery.get_config().copy_automation, false)
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 })
+                assert_equal(#disabled_envelope.items, 2)
+                assert_equal(disabled_envelope.points[3].value, 0.9)
+            end)
+        end,
+    },
+    {
+        name = "insert-after clone shifts later automation with the timeline",
+        run = function()
+            local fake, track = make_duplicate_fake(false)
+            local envelope = add_duplicate_automation(fake, track)
+            fake.values[scenery.EXT_SECTION .. ":insert_after_current"] = "1"
+            with_fake_reaper(fake, function()
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 })
+                local points_by_time = {}
+                for _, point in ipairs(envelope.points) do points_by_time[point.time] = point.value end
+                assert_equal(points_by_time[4], 0.1)
+                assert_equal(points_by_time[6], 0.5)
+                assert_equal(points_by_time[13], 0.9)
+                assert_equal(points_by_time[20], 0.2)
+                assert_equal(envelope.items[2].D_POSITION, 13)
+                assert_equal(envelope.items[3].D_POSITION, 5)
+                assert_equal(envelope.items[4].D_POSITION, 9)
             end)
         end,
     },
