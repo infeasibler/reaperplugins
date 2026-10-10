@@ -282,6 +282,58 @@ function M.delete_scene(scene, keep_items)
     reaper.DeleteProjectMarkerByIndex(0, scene.enum_idx)
 end
 
+local function remove_items_in_range(start_time, end_time)
+    local epsilon = 1e-9
+    local sample_rate = 48000
+    if type(reaper.GetSetProjectInfo) == "function" then
+        local project_sample_rate = reaper.GetSetProjectInfo(0, "PROJECT_SRATE", 0, false)
+        if project_sample_rate and project_sample_rate > 0 then
+            sample_rate = project_sample_rate
+        end
+    end
+    local sample_duration = 1 / sample_rate
+    local function split_failure_message(track_index, entry, item, split_pos)
+        local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+        local item_end = item_start + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        local locked = reaper.GetMediaItemInfo_Value(item, "C_LOCK") or 0
+        return string.format("Track %d, item %d (%.6f-%.6f s) could not be split at %.6f s (C_LOCK=%d).",
+            track_index + 1, entry.index, item_start, item_end, split_pos, locked)
+    end
+
+    for track_index = reaper.CountTracks(0) - 1, 0, -1 do
+        local track = reaper.GetTrack(0, track_index)
+        local items = {}
+        for item_index = 0, reaper.CountTrackMediaItems(track) - 1 do
+            items[#items + 1] = {
+                item = reaper.GetTrackMediaItem(track, item_index),
+                index = item_index + 1,
+            }
+        end
+
+        for _, entry in ipairs(items) do
+            local item = entry.item
+            local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local item_end = item_start + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            if item_start < end_time - epsilon and item_end > start_time + epsilon then
+                if item_end > end_time + epsilon then
+                    if not reaper.SplitMediaItem(item, end_time) then
+                        return false, split_failure_message(track_index, entry, item, end_time)
+                    end
+                end
+                local overlapping_item = item
+                if item_start < start_time - epsilon and start_time - item_start >= sample_duration then
+                    overlapping_item = reaper.SplitMediaItem(item, start_time)
+                    if not overlapping_item then
+                        return false, split_failure_message(track_index, entry, item, start_time)
+                    end
+                end
+                reaper.DeleteTrackMediaItem(track, overlapping_item)
+            end
+        end
+    end
+    return true
+end
+
 function M.is_playing()
     return (reaper.GetPlayState() & 1) == 1
 end
@@ -748,14 +800,32 @@ local function shift_project_time(start, amount)
     end
 
     for _, marker in ipairs(markers) do
-        reaper.SetProjectMarkerByIndex2(0, marker.enum_idx, marker.isrgn,
-            marker.pos + amount, marker.isrgn and marker.rgnend + amount or 0,
-            marker.id, marker.name, marker.color, 0)
+        local current_index = 0
+        while true do
+            local retval, _, _, _, _, id = reaper.EnumProjectMarkers3(0, current_index)
+            if retval == 0 then break end
+            if id == marker.id then
+                reaper.SetProjectMarkerByIndex2(0, current_index, marker.isrgn,
+                    marker.pos + amount, marker.isrgn and marker.rgnend + amount or 0,
+                    marker.id, marker.name, marker.color, 0)
+                break
+            end
+            current_index = current_index + 1
+        end
     end
     for _, item in ipairs(items) do
         local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
         reaper.SetMediaItemInfo_Value(item, "D_POSITION", pos + amount)
     end
+end
+
+function M.delete_scene_and_shift(scene)
+    local shift = scene.pos - scene.rgnend
+    local succeeded, error_message = remove_items_in_range(scene.pos, scene.rgnend)
+    if not succeeded then return false, error_message end
+    M.delete_scene(scene, true)
+    shift_project_time(scene.rgnend, shift)
+    return true
 end
 
 local function create_scene_at(start, bars, scenes)

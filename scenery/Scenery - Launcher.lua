@@ -6,6 +6,7 @@
 --   [main] Scenery - New scene (custom bars).lua
 --   [main] Scenery - Clone current scene.lua
 --   [main] Scenery - Copy current scene.lua
+--   [main] Scenery - Delete current scene and close gap.lua
 --   [main] Scenery - Go to next scene.lua
 --   [main] Scenery - Go to previous scene.lua
 --   [main] Scenery - Settings.lua
@@ -199,6 +200,28 @@ local function delete_scene(scene, keep_items, skip_confirm)
     end
 end
 
+local function delete_scene_and_shift(scene)
+    local succeeded
+    local error_message
+    if not L.get_config().confirm_destructive then
+        undoable("Scenery: Delete scene and close gap", function()
+            succeeded, error_message = L.delete_scene_and_shift(scene)
+        end)
+    else
+        local answer = reaper.MB("Delete " .. scene.name .. " and its items, then shift later items and markers " ..
+            "left to close the gap?", "Scenery", 4)
+        if answer == 6 then
+            undoable("Scenery: Delete scene and close gap", function()
+                succeeded, error_message = L.delete_scene_and_shift(scene)
+            end)
+        end
+    end
+    if succeeded == false then
+        reaper.MB((error_message or "An overlapping item could not be split.") ..
+            " The scene was not deleted; check the Undo history for any partial item splits.", "Scenery", 0)
+    end
+end
+
 local function toggle_link(scene)
     undoable("Scenery: Toggle link with next scene", function()
         L.set_linked_to_next(scene, not scene.linked)
@@ -246,6 +269,7 @@ local function scene_menu(scene, scenes)
     add_sep()
     local delete_all_idx = add("Delete scene and its items")
     local delete_keep_idx = add("Delete scene, keep items")
+    local delete_shift_idx = add("Delete scene and close gap")
 
     local choice = gfx.showmenu(table.concat(items, "|"))
     if choice == rename_idx then rename_scene(scene)
@@ -256,6 +280,7 @@ local function scene_menu(scene, scenes)
     elseif merge_idx and choice == merge_idx then merge_chain(scene, scenes)
     elseif choice == delete_all_idx then delete_scene(scene, false)
     elseif choice == delete_keep_idx then delete_scene(scene, true)
+    elseif choice == delete_shift_idx then delete_scene_and_shift(scene)
     end
 end
 

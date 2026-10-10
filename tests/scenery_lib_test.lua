@@ -142,6 +142,200 @@ end
 
 local tests = {
     {
+        name = "deleting a scene removes its items and shifts later items and markers left",
+        run = function()
+            local markers = {
+                { false, 5, 0, "Earlier marker", 8, 0 },
+                { true, 10, 14, "Delete me", 7, 0 },
+                { false, 12, 0, "Inside marker", 10, 0 },
+                { true, 14, 18, "Later scene", 9, 0 },
+                { false, 16, 0, "Later marker", 11, 0 },
+            }
+            local track = { items = {
+                { pos = 8, len = 4 },
+                { pos = 11, len = 1 },
+                { pos = 8, len = 8 },
+                { pos = 14, len = 1 },
+            } }
+            local fake = {
+                GetSetProjectInfo = function() return 48000 end,
+                EnumProjectMarkers3 = function(_, index)
+                    local marker = markers[index + 1]
+                    if not marker then return 0 end
+                    return 1, table.unpack(marker)
+                end,
+                DeleteProjectMarkerByIndex = function(_, index)
+                    table.remove(markers, index + 1)
+                end,
+                SetProjectMarkerByIndex2 = function(_, index, is_region, pos, rgnend, id, name, color)
+                    markers[index + 1] = { is_region, pos, rgnend, name, id, color }
+                    table.sort(markers, function(left, right) return left[2] < right[2] end)
+                end,
+                CountTracks = function() return 1 end,
+                GetTrack = function() return track end,
+                CountTrackMediaItems = function(target) return #target.items end,
+                GetTrackMediaItem = function(target, index) return target.items[index + 1] end,
+                GetMediaItemInfo_Value = function(item, key)
+                    if key == "D_POSITION" then return item.pos end
+                    if key == "D_LENGTH" then return item.len end
+                end,
+                SetMediaItemInfo_Value = function(item, key, value)
+                    if key == "D_POSITION" then item.pos = value end
+                end,
+                SplitMediaItem = function(item, split_pos)
+                    local right = {
+                        pos = split_pos,
+                        len = item.pos + item.len - split_pos,
+                    }
+                    item.len = split_pos - item.pos
+                    track.items[#track.items + 1] = right
+                    return right
+                end,
+                DeleteTrackMediaItem = function(target, item_to_delete)
+                    for index, item in ipairs(target.items) do
+                        if item == item_to_delete then
+                            table.remove(target.items, index)
+                            return
+                        end
+                    end
+                end,
+            }
+            with_fake_reaper(fake, function()
+                scenery.delete_scene_and_shift({ enum_idx = 1, pos = 10, rgnend = 14 })
+                assert_equal(#track.items, 4)
+                local positions = {}
+                for _, item in ipairs(track.items) do positions[#positions + 1] = item.pos end
+                table.sort(positions)
+                assert_equal(table.concat(positions, ","), "8,8,10,10")
+                local marker_by_name = {}
+                for _, marker in ipairs(markers) do marker_by_name[marker[4]] = marker end
+                assert_equal(#markers, 4)
+                assert_equal(marker_by_name["Earlier marker"][2], 5)
+                assert_equal(marker_by_name["Inside marker"][2], 12)
+                assert_equal(marker_by_name["Later scene"][2], 10)
+                assert_equal(marker_by_name["Later scene"][3], 14)
+                assert_equal(marker_by_name["Later marker"][2], 12)
+            end)
+        end,
+    },
+    {
+        name = "sub-sample leading overlap is deleted without splitting and later audio is preserved",
+        run = function()
+            local markers = {
+                { true, 10, 14, "Delete me", 7, 0 },
+            }
+            local track = { items = { { pos = 9.999999, len = 5 } } }
+            local split_positions = {}
+            local fake = {
+                GetSetProjectInfo = function(_, key)
+                    assert_equal(key, "PROJECT_SRATE")
+                    return 48000
+                end,
+                EnumProjectMarkers3 = function(_, index)
+                    local marker = markers[index + 1]
+                    if not marker then return 0 end
+                    return 1, table.unpack(marker)
+                end,
+                DeleteProjectMarkerByIndex = function(_, index)
+                    table.remove(markers, index + 1)
+                end,
+                CountTracks = function() return 1 end,
+                GetTrack = function() return track end,
+                CountTrackMediaItems = function(target) return #target.items end,
+                GetTrackMediaItem = function(target, index) return target.items[index + 1] end,
+                GetMediaItemInfo_Value = function(item, key)
+                    if key == "D_POSITION" then return item.pos end
+                    if key == "D_LENGTH" then return item.len end
+                end,
+                SplitMediaItem = function(item, split_pos)
+                    split_positions[#split_positions + 1] = split_pos
+                    local right = { pos = split_pos, len = item.pos + item.len - split_pos }
+                    item.len = split_pos - item.pos
+                    track.items[#track.items + 1] = right
+                    return right
+                end,
+                DeleteTrackMediaItem = function(target, item_to_delete)
+                    for index, item in ipairs(target.items) do
+                        if item == item_to_delete then
+                            table.remove(target.items, index)
+                            return
+                        end
+                    end
+                end,
+                SetMediaItemInfo_Value = function(item, key, value)
+                    if key == "D_POSITION" then item.pos = value end
+                end,
+                SetProjectMarkerByIndex2 = function(_, index, is_region, pos, rgnend, id, name, color)
+                    markers[index + 1] = { is_region, pos, rgnend, name, id, color }
+                end,
+            }
+            with_fake_reaper(fake, function()
+                local succeeded = scenery.delete_scene_and_shift({ enum_idx = 0, pos = 10, rgnend = 14 })
+                assert_equal(succeeded, true)
+                assert_equal(#split_positions, 1)
+                assert_equal(split_positions[1], 14)
+                assert_equal(#track.items, 1)
+                assert_equal(track.items[1].pos, 10)
+                assert_equal(math.floor(track.items[1].len * 1000000 + 0.5), 999999)
+            end)
+        end,
+    },
+    {
+        name = "failed item split reports timing and lock state without passing an invalid handle",
+        run = function()
+            local markers = {
+                { true, 10, 14, "Delete me", 7, 0 },
+            }
+            local track = { items = { { pos = 8, len = 8, locked = false } } }
+            local split_calls = 0
+            local delete_item_called = false
+            local fake = {
+                GetSetProjectInfo = function() return 48000 end,
+                EnumProjectMarkers3 = function(_, index)
+                    local marker = markers[index + 1]
+                    if not marker then return 0 end
+                    return 1, table.unpack(marker)
+                end,
+                DeleteProjectMarkerByIndex = function(_, index)
+                    table.remove(markers, index + 1)
+                end,
+                CountTracks = function() return 1 end,
+                GetTrack = function() return track end,
+                CountTrackMediaItems = function(target) return #target.items end,
+                GetTrackMediaItem = function(target, index) return target.items[index + 1] end,
+                GetMediaItemInfo_Value = function(item, key)
+                    if key == "D_POSITION" then return item.pos end
+                    if key == "D_LENGTH" then return item.len end
+                    if key == "C_LOCK" then return item.locked and 1 or 0 end
+                end,
+                SplitMediaItem = function(item, split_pos)
+                    split_calls = split_calls + 1
+                    if split_calls == 2 then return nil end
+                    local right = { pos = split_pos, len = item.pos + item.len - split_pos }
+                    item.len = split_pos - item.pos
+                    track.items[#track.items + 1] = right
+                    return right
+                end,
+                DeleteTrackMediaItem = function()
+                    delete_item_called = true
+                end,
+            }
+            with_fake_reaper(fake, function()
+                local succeeded, failure = scenery.delete_scene_and_shift({
+                    enum_idx = 0,
+                    pos = 10,
+                    rgnend = 14,
+                })
+                assert_equal(succeeded, false)
+                assert_equal(failure,
+                    "Track 1, item 1 (8.000000-14.000000 s) could not be split at 10.000000 s (C_LOCK=0).")
+                assert_equal(delete_item_called, false)
+                assert_equal(#markers, 1)
+                assert_equal(#track.items, 2)
+            end)
+        end,
+    },
+    {
         name = "recent MIDI input pairs note events across a loop wrap",
         run = function()
             local fake = make_state_fake()
