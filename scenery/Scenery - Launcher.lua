@@ -63,6 +63,7 @@ local last_click = { time = 0, y = -1 }
 local scroll = 0
 local track_skip_open = false
 local track_skip_scroll = 0
+local scene_drag = nil
 
 local function logical_width()
     return gfx.w / SCALE.value
@@ -124,7 +125,7 @@ local function resize_window(scale)
 end
 
 local function button(x, y, w, h, label, color, disabled)
-    local hovered = not disabled and hit(x, y, w, h)
+    local hovered = not disabled and not scene_drag and hit(x, y, w, h)
     panel(x, y, w, h, color or COLOR.button, hovered)
     draw_label(label, x, y, w, h, disabled and COLOR.dim or nil)
     return hovered and mouse.lclick
@@ -306,12 +307,78 @@ local function draw_scene_list(scenes, top, height)
     scroll = math.min(math.max(0, scroll), math.max(0, #scenes * step - height))
 
     local link_w = 28
+    local drag_w = 22
+    local pointer_y = mouse.y / SCALE.value
+    local in_list = hit(PAD, top, logical_width() - PAD * 2, height)
+    local source
+    if scene_drag then
+        for _, scene in ipairs(scenes) do
+            if scene.id == scene_drag.id then source = scene; break end
+        end
+        if not source or scene_drag.project ~= reaper.EnumProjects(-1, "")
+            or scene_drag.revision ~= reaper.GetProjectStateChangeCount(0) then
+            scene_drag = nil
+        end
+    end
+    local drop_index
+    if scene_drag then
+        if mouse.ldown and in_list then
+            local now = reaper.time_precise()
+            local elapsed = math.min(0.1, now - scene_drag.last_frame)
+            if pointer_y < top + ROW.h then scroll = scroll - elapsed * step * 8 end
+            if pointer_y > top + height - ROW.h then scroll = scroll + elapsed * step * 8 end
+            scroll = math.min(math.max(0, scroll), math.max(0, #scenes * step - height))
+            scene_drag.last_frame = now
+        end
+        if in_list then
+            drop_index = math.min(#scenes + 1, math.max(1,
+                math.floor((pointer_y - top + scroll + step / 2) / step) + 1))
+            if scenes[drop_index] then
+                drop_index = L.link_chain(scenes[drop_index], scenes)[1].num
+            end
+            if not L.scene_move_plan(source, scenes[drop_index], scenes) then drop_index = nil end
+        end
+        if mouse.lrelease then
+            scene_drag = nil
+            if drop_index then
+                local succeeded, message
+                undoable("Scenery: Reorder scenes", function()
+                    succeeded, message = L.move_scene(source, scenes[drop_index], scenes)
+                end)
+                if not succeeded then reaper.MB(message, "Scenery", 0) end
+            end
+            return
+        end
+    end
+    local dragged_ids = {}
+    if scene_drag then
+        for _, member in ipairs(L.link_chain(source, scenes)) do dragged_ids[member.id] = true end
+    end
     for _, scene in ipairs(scenes) do
         local y = top + (scene.num - 1) * step - scroll
-        if y + ROW.h > top and y < top + height then
-            local x, w = PAD, logical_width() - PAD * 2 - link_w - ROW.gap
-            local hovered = hit(x, y, w, ROW.h)
-            panel(x, y, w, ROW.h, row_color(scene, active, next_id), hovered and mouse.lclick)
+        if y >= top and y + ROW.h <= top + height then
+            local x = PAD + drag_w + ROW.gap
+            local w = logical_width() - PAD * 2 - link_w - drag_w - ROW.gap * 2
+            local handle_hovered = hit(PAD, y, drag_w, ROW.h)
+            panel(PAD, y, drag_w, ROW.h, COLOR.button, handle_hovered)
+            set_color(dragged_ids[scene.id] and COLOR.next or COLOR.dim)
+            for line_index = 0, 2 do
+                gfx.rect((PAD + 5) * SCALE.value, (y + 8 + line_index * 4) * SCALE.value,
+                    12 * SCALE.value, math.max(1, SCALE.value), 1)
+            end
+            if handle_hovered and not scene_drag then
+                if type(reaper.TrackCtl_SetToolTip) == "function" then
+                    local screen_x, screen_y = gfx.clienttoscreen(mouse.x + 12, mouse.y + 16)
+                    reaper.TrackCtl_SetToolTip("Move scene chain", screen_x, screen_y, true)
+                end
+                if mouse.lclick then
+                    scene_drag = { id = scene.id, project = reaper.EnumProjects(-1, ""),
+                        revision = reaper.GetProjectStateChangeCount(0), last_frame = reaper.time_precise() }
+                end
+            end
+            local hovered = not scene_drag and hit(x, y, w, ROW.h)
+            panel(x, y, w, ROW.h, dragged_ids[scene.id] and COLOR.row_hover
+                or row_color(scene, active, next_id), hovered and mouse.lclick)
             draw_label(scene.name, x, y, w, ROW.h)
 
             if hovered and mouse.lclick then
@@ -328,6 +395,14 @@ local function draw_scene_list(scenes, top, height)
                     toggle_link(scene)
                 end
             end
+        end
+    end
+    if drop_index then
+        local line_y = top + (drop_index - 1) * step - scroll - ROW.gap / 2
+        if line_y >= top - 2 and line_y <= top + height then
+            set_color(COLOR.next)
+            gfx.rect(PAD * SCALE.value, line_y * SCALE.value,
+                (logical_width() - PAD * 2) * SCALE.value, 2 * SCALE.value, 1)
         end
     end
 end
@@ -585,6 +660,8 @@ local function read_input()
 
     local cap = gfx.mouse_cap
     mouse.lclick = (cap & 1) == 1 and (prev_cap & 1) == 0
+    mouse.ldown = (cap & 1) == 1
+    mouse.lrelease = (cap & 1) == 0 and (prev_cap & 1) == 1
     mouse.rclick = (cap & 2) == 2 and (prev_cap & 2) == 0
     prev_cap = cap
 
@@ -648,7 +725,9 @@ local function loop()
     local char = gfx.getchar()
     if char == -1 then return end
     if char == 27 then
-        if track_skip_open then track_skip_open = false else return end
+        if scene_drag then
+            scene_drag = nil
+        elseif track_skip_open then track_skip_open = false else return end
     end
     reaper.defer(loop)
 end

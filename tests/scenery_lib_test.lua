@@ -140,7 +140,294 @@ local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout, ski
     return fake, track, lead_in, destination_item_before, destination_item, audio_first, audio_leadout
 end
 
+local function make_reorder_fake()
+    local fake = make_state_fake()
+    fake.restored = 0
+    fake.play_state = 0
+    local scenes = { make_scene(1, 0, 4), make_scene(2, 4, 8, true),
+        make_scene(3, 8, 10), make_scene(4, 10, 15) }
+    local markers = {}
+    for index, scene in ipairs(scenes) do
+        scene.id = index
+        scene.name = "Scene " .. index
+        scene.enum_idx = index - 1
+        markers[#markers + 1] = { true, scene.pos, scene.rgnend, "Scene " .. index, index, index }
+    end
+    markers[#markers + 1] = { false, 5, 0, "Inside", 1, 0 }
+    local envelope = {
+        points = { { 0, 0, 0, 0, false }, { 5, 0.5, 0, 0, true }, { 15, 1, 0, 0, false } },
+        items = { { D_POOL_ID = 7, D_POSITION = 3, D_LENGTH = 3, D_STARTOFFS = 1,
+            D_PLAYRATE = 2, D_BASELINE = 0.2, D_AMPLITUDE = 0.8, D_LOOPSRC = 1,
+            D_UISEL = 1, D_MUTE = 0 } },
+    }
+    local track = { items = { { pos = 0, len = 4 }, { pos = 4, len = 6 },
+        { pos = 10, len = 5 }, { pos = 16, len = 1 } }, envelopes = { envelope } }
+    local master = { items = {}, envelopes = {} }
+    fake.GetPlayState = function() return fake.play_state end
+    fake.GetSetProjectInfo = function() return 48000 end
+    fake.GetProjectLength = function() return 20 end
+    fake.CountTracks = function() return 1 end
+    fake.GetTrack = function() return track end
+    fake.GetMasterTrack = function() return master end
+    fake.CountTrackMediaItems = function(target) return #target.items end
+    fake.GetTrackMediaItem = function(target, index) return target.items[index + 1] end
+    fake.GetMediaItemInfo_Value = function(item, key)
+        if key == "D_POSITION" then return item.pos end
+        if key == "D_LENGTH" then return item.len end
+        if key == "C_LOCK" then return item.locked and 1 or 0 end
+    end
+    fake.SetMediaItemInfo_Value = function(item, key, value)
+        if key == "D_POSITION" then item.pos = value end
+        return true
+    end
+    fake.SplitMediaItem = function(item, position)
+        local right = { pos = position, len = item.pos + item.len - position }
+        item.len = position - item.pos
+        track.items[#track.items + 1] = right
+        return right
+    end
+    fake.GetTrackStateChunk = function(target) return true, target end
+    fake.SetTrackStateChunk = function() fake.restored = (fake.restored or 0) + 1; return true end
+    fake.CountTrackEnvelopes = function(target) return #target.envelopes end
+    fake.GetTrackEnvelope = function(target, index) return target.envelopes[index + 1] end
+    fake.GetTrackEnvelopeByChunkName = function() return nil end
+    fake.CountEnvelopePointsEx = function(target) return #target.points end
+    fake.GetEnvelopePointEx = function(target, _, index)
+        local point = target.points[index + 1]
+        if not point then return false end
+        return true, table.unpack(point)
+    end
+    fake.GetEnvelopePointByTimeEx = function(target, _, time)
+        local found = -1
+        for index, point in ipairs(target.points) do
+            if point[1] <= time then found = index - 1 end
+        end
+        return found
+    end
+    fake.Envelope_Evaluate = function(target, time)
+        assert_equal(target.items[1].D_MUTE, 1)
+        return 1, time / 15
+    end
+    fake.DeleteEnvelopePointEx = function(target, _, index)
+        table.remove(target.points, index + 1)
+        return true
+    end
+    fake.InsertEnvelopePointEx = function(target, _, time, value, shape, tension, selected)
+        target.points[#target.points + 1] = { time, value, shape, tension, selected }
+        return true
+    end
+    fake.Envelope_SortPointsEx = function(target)
+        table.sort(target.points, function(left, right) return left[1] < right[1] end)
+        return true
+    end
+    fake.CountAutomationItems = function(target) return #target.items end
+    fake.GetSetAutomationItemInfo = function(target, index, key, value, write)
+        local item = target.items[index + 1]
+        if write then item[key] = value end
+        local result = item[key]
+        if write and key == "D_POSITION" then
+            table.sort(target.items, function(left, right) return left.D_POSITION < right.D_POSITION end)
+        end
+        return result
+    end
+    fake.InsertAutomationItem = function(target, pool, position, length)
+        local item = { D_POOL_ID = pool, D_POSITION = position, D_LENGTH = length }
+        target.items[#target.items + 1] = item
+        table.sort(target.items, function(left, right) return left.D_POSITION < right.D_POSITION end)
+        for index, candidate in ipairs(target.items) do if candidate == item then return index - 1 end end
+    end
+    fake.EnumProjectMarkers3 = function(_, index)
+        local marker = markers[index + 1]
+        if not marker then return 0 end
+        return 1, table.unpack(marker)
+    end
+    fake.SetProjectMarkerByIndex2 = function(_, index, is_region, position, finish, id, name, color, flags)
+        if index == -1 then
+            table.sort(markers, function(left, right) return left[2] < right[2] end)
+        else
+            assert_equal(flags & 2, 2)
+            markers[index + 1] = { is_region, position, finish, name, id, color }
+        end
+        return true
+    end
+    return fake, scenes, track, envelope, markers, master
+end
+
 local tests = {
+    {
+        name = "launcher drag handles commit on release and Escape cancels without launching",
+        run = function()
+            local function run_frames(frames, expected_moves)
+                local fake, scenes = make_reorder_fake()
+                local move_count, launch_count, undo_count = 0, 0, 0
+                local pending_frame
+                local library = {
+                    EXT_SECTION = scenery.EXT_SECTION,
+                    get_config = scenery.get_config,
+                    scan_scenes = function() return scenes end,
+                    active_scene = function() return scenes[1] end,
+                    get_next_scene_id = function() return nil end,
+                    get_smooth_seek = function() return false end,
+                    record_stop_pending = function() return false end,
+                    is_recording = function() return false end,
+                    engine_running = function() return true end,
+                    link_chain = scenery.link_chain,
+                    scene_move_plan = scenery.scene_move_plan,
+                    switch_scene = function() launch_count = launch_count + 1 end,
+                    jump_to = function() launch_count = launch_count + 1 end,
+                    move_scene = function(source, before_scene)
+                        assert_equal(source.id, 1)
+                        assert_equal(before_scene, nil)
+                        move_count = move_count + 1
+                        return true
+                    end,
+                }
+                local graphics = { w = 260, h = 1000, mouse_wheel = 0 }
+                graphics.set = function() end
+                graphics.rect = function() end
+                graphics.setfont = function() end
+                graphics.measurestr = function(text) return #text * 6, 14 end
+                graphics.drawstr = function() end
+                graphics.init = function() end
+                graphics.update = function() end
+                graphics.getchar = function() return graphics.character end
+                fake.get_action_context = function() return false, "scenery/Scenery - Launcher.lua" end
+                fake.EnumProjects = function() return "project" end
+                fake.GetProjectStateChangeCount = function() return 1 end
+                fake.time_precise = function() return 10 end
+                fake.TrackCtl_SetToolTip = false
+                fake.JS_Window_AttachTopmostPin = false
+                fake.PreventUIRefresh = function() end
+                fake.UpdateArrange = function() end
+                fake.Undo_BeginBlock2 = function() undo_count = undo_count + 1 end
+                fake.Undo_EndBlock2 = function() end
+                fake.atexit = function() end
+                fake.defer = function(callback) pending_frame = callback end
+                local environment = setmetatable({ reaper = fake, gfx = graphics,
+                    dofile = function() return library end }, { __index = _G })
+                with_fake_reaper(fake, function()
+                    for index, input in ipairs(frames) do
+                        graphics.mouse_x, graphics.mouse_y, graphics.mouse_cap, graphics.character =
+                            input[1], input[2], input[3], input[4]
+                        if index == 1 then
+                            assert(loadfile("scenery/Scenery - Launcher.lua", "t", environment))()
+                        else
+                            local callback = pending_frame
+                            pending_frame = nil
+                            callback()
+                        end
+                        if index < 3 then assert_equal(move_count, 0) end
+                    end
+                    assert_equal(move_count, expected_moves)
+                    assert_equal(undo_count, expected_moves)
+                    assert_equal(launch_count, 0)
+                end)
+            end
+            run_frames({ { 16, 16, 1, 0 }, { 16, 135, 1, 0 }, { 16, 135, 0, -1 } }, 1)
+            run_frames({ { 16, 16, 1, 0 }, { 16, 135, 1, 27 }, { 16, 135, 0, -1 } }, 0)
+            run_frames({ { 16, 16, 1, 0 }, { 400, 135, 1, 0 }, { 400, 135, 0, -1 } }, 0)
+        end,
+    },
+    {
+        name = "reordering moves linked media, markers and automation while preserving pooled splits",
+        run = function()
+            local fake, scenes, track, envelope, markers = make_reorder_fake()
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.move_scene(scenes[3], scenes[1], scenes), true)
+                assert_equal(track.items[1].pos, 6)
+                assert_equal(track.items[2].pos, 0)
+                assert_equal(track.items[3].pos, 10)
+                assert_equal(track.items[4].pos, 16)
+                local moved_point
+                for _, point in ipairs(envelope.points) do
+                    if point[5] then moved_point = point end
+                end
+                assert_equal(moved_point[1], 1)
+                assert_equal(moved_point[2], 0.5)
+                assert_equal(#envelope.items, 2)
+                assert_equal(envelope.items[1].D_POSITION, 0)
+                assert_equal(envelope.items[1].D_LENGTH, 2)
+                assert_equal(envelope.items[1].D_STARTOFFS, 3)
+                assert_equal(envelope.items[2].D_POSITION, 9)
+                assert_equal(envelope.items[2].D_LENGTH, 1)
+                for _, item in ipairs(envelope.items) do
+                    assert_equal(item.D_POOL_ID, 7)
+                    assert_equal(item.D_MUTE, 0)
+                    assert_equal(item.D_AMPLITUDE, 0.8)
+                end
+                for _, marker in ipairs(markers) do
+                    if marker[4] == "Inside" then assert_equal(marker[2], 1) end
+                    if marker[4] == "Scene 2" then
+                        assert_equal(marker[2], 0)
+                        assert_equal(marker[3], 4)
+                    end
+                end
+            end)
+        end,
+    },
+    {
+        name = "scene reordering splits crossing media and rolls back failed track edits",
+        run = function()
+            local fake, scenes, track = make_reorder_fake()
+            track.items = { { pos = 2, len = 10 } }
+            track.envelopes = {}
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.move_scene(scenes[2], nil, scenes), true)
+                assert_equal(#track.items, 3)
+                assert_equal(track.items[1].pos, 2)
+                assert_equal(track.items[1].len, 2)
+                assert_equal(track.items[2].pos, 9)
+                assert_equal(track.items[2].len, 6)
+                assert_equal(track.items[3].pos, 4)
+                assert_equal(track.items[3].len, 2)
+            end)
+            fake, scenes, track = make_reorder_fake()
+            track.items = { { pos = 2, len = 10 } }
+            fake.SplitMediaItem = function() return nil end
+            with_fake_reaper(fake, function()
+                local ok, message = scenery.move_scene(scenes[2], nil, scenes)
+                assert_equal(ok, false)
+                assert_equal(assert(message):find("rolled back", 1, true) ~= nil, true)
+                assert_equal(fake.restored, 2)
+            end)
+        end,
+    },
+    {
+        name = "scene reordering rejects playback, locked items and overlapping regions before editing",
+        run = function()
+            local fake, scenes, track = make_reorder_fake()
+            with_fake_reaper(fake, function()
+                fake.play_state = 1
+                assert_equal(scenery.move_scene(scenes[2], nil, scenes), false)
+                fake.play_state = 0
+                track.items[2].locked = true
+                assert_equal(scenery.move_scene(scenes[2], nil, scenes), false)
+                track.items[2].locked = false
+                scenes[1].rgnend = 5
+                assert_equal(scenery.move_scene(scenes[2], nil, scenes), false)
+                assert_equal(track.items[2].pos, 4)
+            end)
+        end,
+    },
+    {
+        name = "scene move plans preserve linked chains in both directions and ignore self drops",
+        run = function()
+            local scenes = {
+                make_scene(1, 0, 4), make_scene(2, 4, 8, true),
+                make_scene(3, 8, 10), make_scene(4, 10, 15),
+            }
+            local earlier = assert(scenery.scene_move_plan(scenes[3], scenes[1], scenes))
+            assert_equal(#earlier.chain, 2)
+            assert_equal(earlier.ranges[1].offset, 6)
+            assert_equal(earlier.ranges[2].offset, -4)
+            local later = assert(scenery.scene_move_plan(scenes[2], nil, scenes))
+            assert_equal(later.ranges[1].offset, 5)
+            assert_equal(later.ranges[2].offset, -6)
+            local into_chain = scenery.scene_move_plan(scenes[1], scenes[3], scenes)
+            assert_equal(into_chain, nil)
+            assert_equal(scenery.scene_move_plan(scenes[3], scenes[2], scenes), nil)
+        end,
+    },
     {
         name = "deleting a scene removes its items and shifts later items and markers left",
         run = function()

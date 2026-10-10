@@ -235,6 +235,277 @@ function M.chain_bounds(scene, scenes)
     return chain[1].pos, chain[#chain].rgnend, chain
 end
 
+function M.scene_move_plan(scene, before_scene, scenes)
+    local start_time, end_time, chain = M.chain_bounds(scene, scenes)
+    local destination = scenes[#scenes].rgnend
+    if before_scene then
+        destination = M.link_chain(before_scene, scenes)[1].pos
+    end
+    if destination >= start_time and destination <= end_time then return nil end
+    local duration = end_time - start_time
+    if duration <= 0 then return nil end
+    local ranges
+    if destination < start_time then
+        ranges = {
+            { start_time = destination, end_time = start_time, offset = duration },
+            { start_time = start_time, end_time = end_time, offset = destination - start_time },
+        }
+    else
+        ranges = {
+            { start_time = start_time, end_time = end_time, offset = destination - end_time },
+            { start_time = end_time, end_time = destination, offset = -duration },
+        }
+    end
+    return { ranges = ranges, chain = chain }
+end
+
+local function move_offset(plan, time)
+    for _, range in ipairs(plan.ranges) do
+        if time >= range.start_time - 1e-9 and time < range.end_time - 1e-9 then
+            return range.offset
+        end
+    end
+    return 0
+end
+
+local function move_cuts(plan)
+    return { plan.ranges[1].start_time, plan.ranges[1].end_time, plan.ranges[2].end_time }
+end
+
+local function move_item_parts(item, cuts, tolerance)
+    local parts = { item }
+    local current = item
+    for _, cut in ipairs(cuts) do
+        local position = reaper.GetMediaItemInfo_Value(current, "D_POSITION")
+        local finish = position + reaper.GetMediaItemInfo_Value(current, "D_LENGTH")
+        if cut - position >= tolerance and finish - cut >= tolerance then
+            current = reaper.SplitMediaItem(current, cut)
+            if not current then error("REAPER refused an item split at " .. cut .. " s.", 0) end
+            parts[#parts + 1] = current
+        end
+    end
+    return parts
+end
+
+local automation_properties = {
+    "D_POOL_ID", "D_POSITION", "D_LENGTH", "D_STARTOFFS", "D_PLAYRATE",
+    "D_BASELINE", "D_AMPLITUDE", "D_LOOPSRC", "D_UISEL", "D_MUTE",
+}
+
+local function automation_snapshot(envelope)
+    local items = {}
+    for index = 0, reaper.CountAutomationItems(envelope) - 1 do
+        local item = {}
+        for _, property in ipairs(automation_properties) do
+            item[property] = reaper.GetSetAutomationItemInfo(envelope, index, property, 0, false)
+        end
+        items[#items + 1] = item
+    end
+    return items
+end
+
+local function find_automation_item(envelope, item)
+    for index = 0, reaper.CountAutomationItems(envelope) - 1 do
+        local matches = true
+        for _, property in ipairs({ "D_POOL_ID", "D_POSITION", "D_LENGTH", "D_STARTOFFS" }) do
+            local value = reaper.GetSetAutomationItemInfo(envelope, index, property, 0, false)
+            if math.abs(value - item[property]) > 1e-9 then matches = false; break end
+        end
+        if matches then return index end
+    end
+    error("An automation item changed during the move.", 0)
+end
+
+local function move_automation_items(envelope, items, plan, cuts)
+    local staged = {}
+    local staging_time = reaper.GetProjectLength(0) + 1
+    for _, item in ipairs(items) do
+        local start_time = item.D_POSITION
+        local finish = start_time + item.D_LENGTH
+        if finish > cuts[1] and start_time < cuts[#cuts] then
+            local index = find_automation_item(envelope, item)
+            reaper.GetSetAutomationItemInfo(envelope, index, "D_POSITION", staging_time, true)
+            item.original_position = start_time
+            item.D_POSITION = staging_time
+            staged[#staged + 1] = item
+            staging_time = staging_time + item.D_LENGTH + 1
+        end
+    end
+    for _, item in ipairs(staged) do
+        local edges = { item.original_position }
+        for _, cut in ipairs(cuts) do
+            if cut > item.original_position + 1e-9
+                and cut < item.original_position + item.D_LENGTH - 1e-9 then
+                edges[#edges + 1] = cut
+            end
+        end
+        edges[#edges + 1] = item.original_position + item.D_LENGTH
+        for part_index = 1, #edges - 1 do
+            local start_time = edges[part_index]
+            local length = edges[part_index + 1] - start_time
+            local position = start_time + move_offset(plan, start_time)
+            local index
+            if part_index == 1 then
+                index = find_automation_item(envelope, item)
+            else
+                index = reaper.InsertAutomationItem(envelope, item.D_POOL_ID, position, length)
+                if index < 0 then error("REAPER refused an automation item split.", 0) end
+            end
+            for _, property in ipairs({ "D_PLAYRATE", "D_BASELINE", "D_AMPLITUDE", "D_LOOPSRC", "D_UISEL", "D_MUTE" }) do
+                reaper.GetSetAutomationItemInfo(envelope, index, property, item[property], true)
+            end
+            reaper.GetSetAutomationItemInfo(envelope, index, "D_STARTOFFS",
+                item.D_STARTOFFS + (start_time - item.original_position) * item.D_PLAYRATE, true)
+            reaper.GetSetAutomationItemInfo(envelope, index, "D_LENGTH", length, true)
+            reaper.GetSetAutomationItemInfo(envelope, index, "D_POSITION", position, true)
+        end
+    end
+end
+
+local function move_envelope(envelope, plan, cuts, sample_rate)
+    local points = {}
+    for index = 0, reaper.CountEnvelopePointsEx(envelope, -1) - 1 do
+        local ok, time, value, shape, tension, selected = reaper.GetEnvelopePointEx(envelope, -1, index)
+        if not ok then error("Could not read a track automation point.", 0) end
+        points[#points + 1] = { time = time, value = value, shape = shape, tension = tension, selected = selected }
+    end
+    local items = automation_snapshot(envelope)
+    if #points > 0 then
+        for index, item in ipairs(items) do
+            reaper.GetSetAutomationItemInfo(envelope, index - 1, "D_MUTE", 1, true)
+        end
+        local guards = {}
+        for _, cut in ipairs(cuts) do
+            for _, time in ipairs({ math.max(0, cut - 1 / sample_rate), cut }) do
+                local _, value = reaper.Envelope_Evaluate(envelope, time, sample_rate, 1)
+                local point_index = reaper.GetEnvelopePointByTimeEx(envelope, -1, time)
+                local _, _, _, shape, tension = reaper.GetEnvelopePointEx(envelope, -1, math.max(0, point_index))
+                guards[#guards + 1] = { time = time, value = value, shape = shape or 0, tension = tension or 0 }
+            end
+        end
+        for index, item in ipairs(items) do
+            reaper.GetSetAutomationItemInfo(envelope, index - 1, "D_MUTE", item.D_MUTE, true)
+        end
+        for _, guard in ipairs(guards) do
+            local exists = false
+            for _, point in ipairs(points) do
+                if math.abs(point.time - guard.time) < 1e-9 then exists = true; break end
+            end
+            if not exists then points[#points + 1] = guard end
+        end
+        for index = reaper.CountEnvelopePointsEx(envelope, -1) - 1, 0, -1 do
+            if not reaper.DeleteEnvelopePointEx(envelope, -1, index) then
+                error("Could not update track automation.", 0)
+            end
+        end
+        for _, point in ipairs(points) do
+            local time = point.time + move_offset(plan, point.time)
+            if not reaper.InsertEnvelopePointEx(envelope, -1, time, point.value,
+                point.shape, point.tension, point.selected or false, true) then
+                error("Could not move a track automation point.", 0)
+            end
+        end
+        reaper.Envelope_SortPointsEx(envelope, -1)
+    end
+    move_automation_items(envelope, items, plan, cuts)
+end
+
+function M.move_scene(scene, before_scene, scenes)
+    if reaper.GetPlayState() ~= 0 then return false, "Stop playback before reordering scenes." end
+    scenes = scenes or M.scan_scenes()
+    local plan = M.scene_move_plan(scene, before_scene, scenes)
+    if not plan then return true end
+    local cuts = move_cuts(plan)
+    for _, candidate in ipairs(scenes) do
+        for _, cut in ipairs(cuts) do
+            if candidate.pos < cut - 1e-9 and candidate.rgnend > cut + 1e-9 then
+                return false, "A region crosses a move boundary. Separate overlapping regions before reordering."
+            end
+        end
+    end
+    local sample_rate = reaper.GetSetProjectInfo(0, "PROJECT_SRATE", 0, false)
+    if sample_rate <= 0 then sample_rate = 48000 end
+    local markers = {}
+    local marker_index = 0
+    while true do
+        local retval, is_region, position, finish, name, id, color = reaper.EnumProjectMarkers3(0, marker_index)
+        if retval == 0 then break end
+        markers[#markers + 1] = { index = marker_index, is_region = is_region, position = position,
+            finish = finish, name = name, id = id, color = color }
+        marker_index = marker_index + 1
+    end
+    local tracks = {}
+    for index = 0, reaper.CountTracks(0) - 1 do tracks[#tracks + 1] = reaper.GetTrack(0, index) end
+    tracks[#tracks + 1] = reaper.GetMasterTrack(0)
+    local snapshots = {}
+    for _, track in ipairs(tracks) do
+        local ok, chunk = reaper.GetTrackStateChunk(track, "", false)
+        if not ok then return false, "Could not save track state before the move." end
+        snapshots[#snapshots + 1] = { track = track, chunk = chunk }
+        for index = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, index)
+            local position = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local finish = position + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+            if finish > cuts[1] and position < cuts[#cuts]
+                and (reaper.GetMediaItemInfo_Value(item, "C_LOCK") & 1) ~= 0 then
+                return false, "An item in the affected time range is locked."
+            end
+        end
+    end
+    local ok, message = pcall(function()
+        for _, track in ipairs(tracks) do
+            local items = {}
+            for index = 0, reaper.CountTrackMediaItems(track) - 1 do
+                items[#items + 1] = reaper.GetTrackMediaItem(track, index)
+            end
+            for _, item in ipairs(items) do
+                for _, part in ipairs(move_item_parts(item, cuts, 1 / sample_rate)) do
+                    local position = reaper.GetMediaItemInfo_Value(part, "D_POSITION")
+                    local normalized = position
+                    for _, cut in ipairs(cuts) do
+                        if math.abs(position - cut) < 1 / sample_rate then normalized = cut; break end
+                    end
+                    local offset = move_offset(plan, normalized)
+                    if offset ~= 0 and not reaper.SetMediaItemInfo_Value(part, "D_POSITION", position + offset) then
+                        error("Could not move a media item.", 0)
+                    end
+                end
+            end
+            for index = 0, reaper.CountTrackEnvelopes(track) - 1 do
+                local envelope = reaper.GetTrackEnvelope(track, index)
+                if envelope ~= reaper.GetTrackEnvelopeByChunkName(track, "<TEMPOENVEX") then
+                    move_envelope(envelope, plan, cuts, sample_rate)
+                end
+            end
+        end
+        for _, marker in ipairs(markers) do
+            local offset = move_offset(plan, marker.position)
+            if not reaper.SetProjectMarkerByIndex2(0, marker.index, marker.is_region, marker.position + offset,
+                marker.is_region and marker.finish + offset or 0, marker.id, marker.name, marker.color,
+                marker.name == "" and 3 or 2) then
+                error("Could not move a project marker or region.", 0)
+            end
+        end
+        reaper.SetProjectMarkerByIndex2(0, -1, false, 0, 0, -1, "", 0, 2)
+    end)
+    if not ok then
+        local restored = true
+        for _, snapshot in ipairs(snapshots) do
+            if not reaper.SetTrackStateChunk(snapshot.track, snapshot.chunk, false) then restored = false end
+        end
+        for _, marker in ipairs(markers) do
+            if not reaper.SetProjectMarkerByIndex2(0, marker.index, marker.is_region, marker.position,
+                marker.finish, marker.id, marker.name, marker.color, marker.name == "" and 3 or 2) then
+                restored = false
+            end
+        end
+        reaper.SetProjectMarkerByIndex2(0, -1, false, 0, 0, -1, "", 0, 2)
+        return false, message .. (restored and " The move was rolled back."
+            or " Restoration failed; use Undo to restore the project.")
+    end
+    return true
+end
+
 -- Collapses `scene`'s whole link chain into a single scene region spanning
 -- head.pos to tail.rgnend. Items are already positioned in absolute project
 -- time and untouched by this - only the region markers change. Re-scans and

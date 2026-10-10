@@ -46,12 +46,24 @@ Scene-based looping for REAPER. A "scene" is any project region — name it what
 - With record auto-loop enabled and the engine running, the launcher's `Rec` button, the `Toggle record (quantized)` action, and REAPER's native Record button/shortcut all start and stop recording immediately. With lead-in/out disabled, the recorded item is bar-aligned and linked pooled copies fill the rest of the scene. When either lead option is enabled, a pre-scene pickup anchors at the scene start; otherwise the source anchors at the next configured phrase boundary. The configured phrase length controls quantized anchoring and record-to-end-of-phrase stopping; with that stop option off, auto-loop repeats the captured bar-aligned span. The launcher and standalone action start the engine automatically; native Record requires the engine to already be running for this processing.
 - "Record to end of phrase" (on by default) is independent of auto-loop: when stopping a recording, it delays the actual stop until just past the next project-aligned phrase boundary, using the configured phrase length (treated as at least one bar), so nothing is lost even if auto-loop is off. The launcher and standalone recording action start the engine automatically when this setting requires it, since the engine polls for the deferred stop point.
 - Every scene action is a single undo step.
+- Drag a scene's three-line handle to reorder it on the timeline. Linked scenes move as a whole chain, and the insertion line snaps to chain boundaries. Media items, project markers/regions, track envelope points and automation items move with the affected time ranges; intervening content shifts to make room. Boundary-crossing items are split while preserving their outside portions. Release outside the list or press Escape to cancel.
 
 ## Current limitations
 
 - Clone and Copy duplicate media items only — envelopes, automation and tempo markers are not copied.
 - Copy preserves each source item's `IGUID` and MIDI `POOLEDEVTS` pooled/comping identities while giving the new item its own `GUID`; Clone gives all three identities fresh values, so its content is independent.
 - Only the last scene can have its length changed.
+- Scene reordering requires stopped transport and unlocked items in the affected time range. Regions crossing a move boundary must be separated first. The tempo map is not reordered. Track automation is preserved with boundary guard points at sample resolution; automation items retain their pools and playback settings.
+
+## Tests
+
+Run the logic and launcher interaction tests with Lua 5.4 from the repository root:
+
+```sh
+lua tests/scenery_lib_test.lua
+```
+
+These tests use fake REAPER/gfx APIs. Verify timeline moves, automation playback, drag feedback and Undo in REAPER on a saved project copy before using reordering on a working arrangement.
 
 ## Planned
 
