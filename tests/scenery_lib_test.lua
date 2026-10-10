@@ -69,6 +69,10 @@ local function make_duplicate_fake(skip_occupied_tracks, with_audio_leadout, ski
     if skip_occupied_tracks then
         fake.values[scenery.EXT_SECTION .. ":skip_occupied_tracks"] = "1"
     end
+    fake.SetProjectMarkerByIndex2 = function(_, index, is_region, pos, rgnend, id, name, color)
+        markers[index + 1] = { is_region, pos, rgnend, name, id, color }
+        return true
+    end
     fake.EnumProjectMarkers3 = function(_, index)
         local marker = markers[index + 1]
         if not marker then return 0 end
@@ -763,7 +767,7 @@ local tests = {
         end,
     },
     {
-        name = "clone replaces destination items and copies lead-in overlap by default",
+        name = "clone replaces destination items and trims lead-in overlap",
         run = function()
             local fake, track, lead_in, destination_item_before, destination_item = make_duplicate_fake(false)
             with_fake_reaper(fake, function()
@@ -787,10 +791,35 @@ local tests = {
                     end
                 end
                 assert_equal(#copies, 4)
-                assert_equal(copies[1].pos, 3)
+                assert_equal(copies[1].pos, 4)
+                assert_equal(copies[1].len, 3)
                 assert_equal(copies[2].pos, 6)
-                assert_equal(copies[3].pos, 7)
+                assert_equal(copies[3].pos, 8)
                 assert_equal(copies[4].pos, 10)
+            end)
+        end,
+    },
+    {
+        name = "insert-after copy does not leave lead-in copies in the source scene",
+        run = function()
+            local fake, track, lead_in, source_item, destination_item = make_duplicate_fake(false)
+            fake.values[scenery.EXT_SECTION .. ":insert_after_current"] = "1"
+            with_fake_reaper(fake, function()
+                scenery.duplicate_scene({ pos = 0, rgnend = 4 })
+                assert_equal(lead_in.pos, -1)
+                assert_equal(lead_in.len, 4)
+                assert_equal(source_item.pos, 2)
+                assert_equal(source_item.len, 2)
+                assert_equal(destination_item.pos, 19)
+
+                local copies = 0
+                for _, item in ipairs(track.items) do
+                    if item ~= lead_in and item ~= source_item and item ~= destination_item then
+                        assert(item.pos >= 4, "copied items must start inside the inserted scene")
+                        copies = copies + 1
+                    end
+                end
+                assert_equal(copies, 4)
             end)
         end,
     },

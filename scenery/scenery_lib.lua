@@ -2174,25 +2174,39 @@ local function copy_items_with_mode(src_start, src_end, dest_start, dest_end, li
             for _, source in ipairs(sources) do
                 local item = source.item
                 local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + offset
+                local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
                 -- an item whose offset position already lands at/past dest_end has nothing
                 -- to keep - SplitMediaItem can't split before an item's own start, so it
                 -- would otherwise be copied in full and left overhanging unclamped
-                if pos < dest_end - 1e-9 then
+                if pos < dest_end - 1e-9 and pos + len > dest_start + 1e-9 then
                     local chunk = source_chunk(item, link_pool)
                     if chunk then
                         local new_item = reaper.AddMediaItemToTrack(track)
                         reaper.SetItemStateChunk(new_item, chunk, false)
-                        local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
                         reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", pos)
-                        local crossfade = incoming_crossfades and incoming_crossfades[track]
-                        if crossfade then apply_audio_fade_in(new_item, crossfade) end
-                        if pos + len > dest_end + 1e-9 and not source.leadout then
-                            -- split rather than shrink D_LENGTH: for MIDI takes the source's own
-                            -- PPQ extents don't follow D_LENGTH, so notes past dest_end would still show
-                            local right = reaper.SplitMediaItem(new_item, dest_end)
-                            if right then reaper.DeleteTrackMediaItem(track, right) end
+                        if pos < dest_start - 1e-9 then
+                            local right = reaper.SplitMediaItem(new_item, dest_start)
+                            if right then
+                                reaper.DeleteTrackMediaItem(track, new_item)
+                                new_item = right
+                                pos = dest_start
+                            else
+                                reaper.DeleteTrackMediaItem(track, new_item)
+                                new_item = nil
+                            end
                         end
-                        copied = copied + 1
+                        if new_item then
+                            local crossfade = incoming_crossfades and incoming_crossfades[track]
+                            if crossfade then apply_audio_fade_in(new_item, crossfade) end
+                            local copied_end = pos + reaper.GetMediaItemInfo_Value(new_item, "D_LENGTH")
+                            if copied_end > dest_end + 1e-9 and not source.leadout then
+                                -- split rather than shrink D_LENGTH: for MIDI takes the source's own
+                                -- PPQ extents don't follow D_LENGTH, so notes past dest_end would still show
+                                local right = reaper.SplitMediaItem(new_item, dest_end)
+                                if right then reaper.DeleteTrackMediaItem(track, right) end
+                            end
+                            copied = copied + 1
+                        end
                     end
                 end
             end
