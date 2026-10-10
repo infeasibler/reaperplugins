@@ -6,11 +6,9 @@
 				<description><![CDATA[Scene-based looping toolkit for REAPER with a launcher panel, scene actions, a follow-along engine, and bar-quantized recording.]]></description>
 				<link rel="website">https://github.com/infeasibler/reaperplugins</link>
 			</metadata>
-			<version name="0.6.0" author="infeasibler" time="2026-09-29T00:00:00Z">
-				<changelog><![CDATA[- Reorder scenes from launcher drag handles, moving linked chains together with media items, regions, markers, track envelopes, and automation items while shifting intervening content.
-- Require stopped transport and unlocked affected media for reordering; reject regions crossing move boundaries and restore timeline content if a move fails. The tempo map remains unchanged.
-- Add a separate launcher delete option that removes the scene's media and closes the timeline gap while preserving meaningful item portions outside the scene.
-- Avoid sub-sample leading splits during close-gap deletion and keep later markers and regions shifting correctly when their order changes.]]></changelog>
+			<version name="0.6.1" author="infeasibler" time="2026-09-29T00:00:00Z">
+				<changelog><![CDATA[- Add configurable copying of track automation points and automation items when duplicating scenes.
+- Trim copied media items that overlap the start of a destination scene and skip items with no destination overlap.]]></changelog>
 				<source main="main" type="script" file="Scenery - Launcher.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20Launcher.lua</source>
 				<source main="main" type="script" file="Scenery - New scene.lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene.lua</source>
 				<source main="main" type="script" file="Scenery - New scene (custom bars).lua">https://github.com/infeasibler/reaperplugins/raw/main/scenery/Scenery%20-%20New%20scene%20(custom%20bars).lua</source>
