@@ -1265,6 +1265,97 @@ local tests = {
         end,
     },
     {
+        name = "engine separates linked transport bounds from recording scene bounds",
+        run = function()
+            local fake = make_state_fake()
+            local scenes = {
+                make_scene(1, 96, 128, true),
+                make_scene(2, 128, 160, true),
+                make_scene(3, 160, 192),
+            }
+            local snapshot = {}
+            local recording, now, pending_frame = false, 0, nil
+            local processed, refreshed = 0, 0
+            local ui_balance, undo_balance = 0, 0
+            local errors = {}
+            local library = {
+                EXT_SECTION = scenery.EXT_SECTION,
+                active_scene = function() return scenes[1] end,
+                chain_bounds = function() return 96, 192 end,
+                scan_scenes = function() return scenes end,
+                is_recording = function() return recording end,
+                is_playing = function() return false end,
+                get_config = function()
+                    return { record_auto_loop = true, follow_enabled = false, poll_interval = 0.008 }
+                end,
+                latest_midi_input_sequence = function() return 0 end,
+                recent_midi_input_events_after = function() return {}, 0 end,
+                snapshot_item_guids = function() return snapshot end,
+                wrapped_midi_input_notes = function(_, loop_range)
+                    assert_equal(loop_range.pos, 96)
+                    assert_equal(loop_range.rgnend, 192)
+                    return {}
+                end,
+                apply_wrapped_midi_notes_to_new_items = function() return 0 end,
+                apply_loop_source_to_new_items = function(existing, loop_range, recording_scenes)
+                    assert_equal(existing, snapshot)
+                    assert_equal(loop_range.pos, 96)
+                    assert_equal(loop_range.rgnend, 192)
+                    assert_equal(recording_scenes, scenes)
+                    processed = processed + 1
+                    return 1
+                end,
+                get_waiting_scene = function() return nil end,
+                clear_waiting_scene = function() end,
+                clear_next_scene = function() end,
+                get_next_scene_id = function() return nil end,
+            }
+            fake.get_action_context = function()
+                return false, "scenery/Scenery - Engine (toggle).lua", 0, 1
+            end
+            fake.SetToggleCommandState = function() end
+            fake.RefreshToolbar2 = function() end
+            fake.PreventUIRefresh = function(change) ui_balance = ui_balance + change end
+            fake.Undo_BeginBlock2 = function() undo_balance = undo_balance + 1 end
+            fake.Undo_EndBlock2 = function() undo_balance = undo_balance - 1 end
+            fake.UpdateArrange = function() refreshed = refreshed + 1 end
+            fake.time_precise = function() return now end
+            fake.defer = function(callback) pending_frame = callback end
+            fake.atexit = function() end
+            fake.ShowConsoleMsg = function(message) errors[#errors + 1] = message end
+            local environment = setmetatable({
+                reaper = fake, dofile = function() return library end,
+            }, { __index = _G })
+            with_fake_reaper(fake, function()
+                assert(loadfile("scenery/Scenery - Engine (toggle).lua", "t", environment))()
+                recording, now = true, 1
+                pending_frame()
+                recording, now = false, 2
+                pending_frame()
+                assert_equal(processed, 1)
+                assert_equal(refreshed, 1)
+                assert_equal(#errors, 0)
+                assert_equal(ui_balance, 0)
+                assert_equal(undo_balance, 0)
+                library.apply_loop_source_to_new_items = function()
+                    error("Could not trim a back-fill copy")
+                end
+                recording, now = true, 3
+                pending_frame()
+                recording, now = false, 4
+                pending_frame()
+                assert_equal(#errors, 1)
+                assert_equal(errors[1]:find("Could not trim a back-fill copy", 1, true) ~= nil, true)
+                assert_equal(ui_balance, 0)
+                assert_equal(undo_balance, 0)
+                assert_equal(refreshed, 2)
+                now = 5
+                pending_frame()
+                assert_equal(#errors, 1)
+            end)
+        end,
+    },
+    {
         name = "record back-fill tiles a mid-scene loop to the scene start",
         run = function()
             local fake = make_state_fake()
@@ -1473,9 +1564,9 @@ local tests = {
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 4)
                 assert_equal(track.items[1].snap_offset, 4)
-                assert_equal(track.items[2].pos, 0)
-                assert_equal(track.items[2].len, 16)
-                assert_equal(track.items[2].snap_offset, 0)
+                assert_equal(track.items[2].pos, -4)
+                assert_equal(track.items[2].len, 20)
+                assert_equal(track.items[2].snap_offset, 4)
                 assert_equal(track.items[3].pos, 28)
                 assert_equal(track.items[3].snap_offset, 4)
                 assert_equal(track.items[4].pos, 44)
@@ -1483,14 +1574,51 @@ local tests = {
                 track.items = { item }
                 fail_split_at = 4
                 processed = scenery.apply_loop_source_to_new_items({}, {
-                    pos = 4,
-                    rgnend = 64,
+                    pos = 4, rgnend = 64,
                 })
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 4)
-                assert_equal(track.items[2].pos, -4)
+                assert_equal(track.items[2].pos, 0)
                 assert_equal(track.items[2].len, 20)
+                assert_equal(track.items[2].pos + track.items[2].snap_offset, 4)
+                assert_equal(item.pos, 12)
             end)
+
+            fail_split_at = nil
+            local recording_scenes = {
+                make_scene(1, 96, 128, true),
+                make_scene(2, 128, 160, true),
+                make_scene(3, 160, 192),
+            }
+            for _, loop_range in ipairs({
+                { pos = 96, rgnend = 192 },
+                { pos = 128, rgnend = 160 },
+                { pos = 0, rgnend = 32 },
+            }) do
+                for _, overshoot in ipairs({ 0, 0.044, 2 }) do
+                    local original = {
+                        guid = "{mid-scene-pickup}", pos = 140, len = 20 + overshoot,
+                    }
+                    local existing = { guid = "{existing}", pos = 96, len = 32 }
+                    track.items = { existing, original }
+                    with_fake_reaper(fake, function()
+                        local processed = scenery.apply_loop_source_to_new_items(
+                            { ["{existing}"] = true }, loop_range, recording_scenes)
+                        assert_equal(processed, 1)
+                        assert_equal(#track.items, 3)
+                        assert_equal(track.items[1], existing)
+                        assert_equal(existing.pos, 96)
+                        assert_equal(existing.len, 32)
+                        assert_equal(track.items[2], original)
+                        assert_equal(original.pos, 140)
+                        assert_equal(math.abs(original.len - (20 + overshoot)) < 1e-9, true)
+                        assert_equal(original.snap_offset, 4)
+                        assert_equal(track.items[3].pos, 124)
+                        assert_equal(math.abs(track.items[3].len - (20 + overshoot)) < 1e-9, true)
+                        assert_equal(track.items[3].snap_offset, 4)
+                    end)
+                end
+            end
 
             fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
             fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "0"
@@ -1507,7 +1635,23 @@ local tests = {
                 assert_equal(#track.items, 4)
                 assert_equal(track.items[2].pos, 0)
                 assert_equal(track.items[2].len, 16)
+                track.items = { item }
+                processed = scenery.apply_loop_source_to_new_items({}, {
+                    pos = 4, rgnend = 64,
+                })
+                assert_equal(processed, 1)
+                assert_equal(track.items[2].pos, 4)
+                assert_equal(track.items[2].len, 12)
+                track.items = { item }
+                fail_split_at = 4
+                local ok, message = pcall(scenery.apply_loop_source_to_new_items, {}, {
+                    pos = 4, rgnend = 64,
+                })
+                assert_equal(ok, false)
+                assert_equal(message:find("Could not trim a back-fill copy", 1, true) ~= nil, true)
+                assert_equal(#track.items, 1)
             end)
+            fail_split_at = nil
 
             fake.values[scenery.EXT_SECTION .. ":record_backfill"] = "0"
             local item_at_scene_start = { guid = "{phrase-alignment}", pos = 8, len = 24 }
@@ -1804,10 +1948,10 @@ local tests = {
                 })
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 4)
-                assert_equal(track.items[2].pos, 0)
-                assert_equal(track.items[2].len, 17)
+                assert_equal(track.items[2].pos, -4)
+                assert_equal(track.items[2].len, 21)
                 assert_equal(#track.items[2].take.notes, 1)
-                assert_equal(track.items[2].take.notes[1].end_ppq, 1700)
+                assert_equal(track.items[2].take.notes[1].end_ppq, 2100)
                 assert_equal(track.items[3].pos, 28)
                 assert_equal(track.items[3].len, 21)
                 assert_equal(track.items[3].take.notes[1].end_ppq, 2100)
@@ -1840,12 +1984,12 @@ local tests = {
                 })
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 1)
-                assert_equal(track.items[1].pos, 0)
+                assert_equal(track.items[1].pos, -12)
                 local crossing_note_found = false
                 for _, note in ipairs(track.items[1].take.notes) do
                     local note_start = track.items[1].pos + note.start_ppq / 100
                     local note_end = track.items[1].pos + note.end_ppq / 100
-                    if math.abs(note_start) < 1e-9
+                    if math.abs(note_start + 0.5) < 1e-9
                         and math.abs(note_end - 64.5) < 1e-9 then
                         crossing_note_found = true
                     end
@@ -2049,7 +2193,7 @@ local tests = {
                     rgnend = 4,
                 })
                 assert_equal(processed, 1)
-                assert_equal(item.active_take, audio_takes[1])
+                assert_equal(item.active_take, audio_takes[2])
                 assert_equal(#item.takes, 2)
 
                 fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
@@ -2060,7 +2204,7 @@ local tests = {
                     rgnend = 4,
                 })
                 assert_equal(processed, 1)
-                assert_equal(item.active_take, audio_takes[1])
+                assert_equal(item.active_take, audio_takes[2])
                 assert_equal(item.len, 6)
             end)
         end,

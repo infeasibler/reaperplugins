@@ -62,14 +62,20 @@ local function service_recording()
             and (cfg.record_auto_loop or #wrapped_notes > 0) then
             reaper.PreventUIRefresh(1)
             reaper.Undo_BeginBlock2(0)
-            local repaired = L.apply_wrapped_midi_notes_to_new_items(
-                recording_snapshot, wrap_scene, wrapped_notes)
-            local processed = 0
-            if cfg.record_auto_loop then
-                processed = L.apply_loop_source_to_new_items(recording_snapshot, target_scene)
-            end
+            local ok, repaired, processed = xpcall(function()
+                local repaired = L.apply_wrapped_midi_notes_to_new_items(
+                    recording_snapshot, wrap_scene, wrapped_notes)
+                local processed = 0
+                if cfg.record_auto_loop then
+                    processed = L.apply_loop_source_to_new_items(
+                        recording_snapshot, wrap_scene, L.scan_scenes())
+                end
+                return repaired, processed
+            end, debug.traceback)
             local undo_label
-            if repaired > 0 then
+            if not ok then
+                undo_label = "Scenery: Recording post-processing failed"
+            elseif repaired > 0 then
                 undo_label = "Scenery: Repair wrapped MIDI (" .. repaired .. " notes)"
                 if processed > 0 then
                     undo_label = undo_label .. "; record auto-loop (" .. processed .. " items)"
@@ -79,7 +85,10 @@ local function service_recording()
             end
             reaper.Undo_EndBlock2(0, undo_label, -1)
             reaper.PreventUIRefresh(-1)
-            if processed > 0 or repaired > 0 then reaper.UpdateArrange() end
+            if not ok then
+                reaper.ShowConsoleMsg("Scenery engine error: " .. tostring(repaired) .. "\n")
+            end
+            if not ok or processed > 0 or repaired > 0 then reaper.UpdateArrange() end
         end
         recording_snapshot = nil
         recording_scene = nil

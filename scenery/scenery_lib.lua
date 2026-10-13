@@ -1906,20 +1906,25 @@ local function backfill_loop_source(track, item, scene, phrase_start, phrase_end
         local chunk = linked_chunk(phrase_item)
         if not chunk then break end
         local phrase_item_pos = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
-        local tile_start = dest - unit + phrase_item_pos - phrase_start
+        local anchor = preserve_lead_in and math.max(scene.pos, dest - unit) or dest - unit
+        local tile_start = anchor + phrase_item_pos - phrase_start
         local tile = reaper.AddMediaItemToTrack(track)
         reaper.SetItemStateChunk(tile, chunk, false)
         reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_start)
         local retained_tile = tile
-        if tile_start < scene.pos - 1e-9 then
+        if not preserve_lead_in and tile_start < scene.pos - 1e-9 then
             local right = reaper.SplitMediaItem(tile, scene.pos)
-            if right then
+            if not right then
                 reaper.DeleteTrackMediaItem(track, tile)
-                retained_tile = right
+                if temporary_phrase_item then
+                    reaper.DeleteTrackMediaItem(track, phrase_item)
+                end
+                error("Scenery: Could not trim a back-fill copy at the scene start.")
             end
+            reaper.DeleteTrackMediaItem(track, tile)
+            retained_tile = right
         end
         if preserve_lead_in then
-            local anchor = dest - unit
             local retained_pos = reaper.GetMediaItemInfo_Value(retained_tile, "D_POSITION")
             reaper.SetMediaItemInfo_Value(retained_tile, "D_SNAPOFFSET",
                 math.max(0, anchor - retained_pos))
@@ -1932,10 +1937,16 @@ local function backfill_loop_source(track, item, scene, phrase_start, phrase_end
     end
 end
 
-local function apply_phrase_recording(track, item, pos, scene, cfg)
+local function apply_phrase_recording(track, item, pos, scene, cfg, loop_scene)
     local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+    local phrase_bars = math.max(1, cfg.switch_wait_bars)
+    -- A stop margin or lead-out beyond the region is not a wrapped phrase.
+    -- Only a pickup whose phrase starts at the transport loop end wraps back.
     if pos > scene.pos + 1e-9 and pos < scene.rgnend - 1e-9
-        and recorded_end > scene.rgnend + 1e-9 then
+        and recorded_end > scene.rgnend + 0.2
+        and math.abs(scene.pos - loop_scene.pos) < 1e-9
+        and math.abs(scene.rgnend - loop_scene.rgnend) < 1e-9
+        and phrase_start_for_recording(pos, scene, phrase_bars) >= scene.rgnend - 1e-9 then
         local boundary_notes = cfg.record_lead_in and {}
             or midi_notes_crossing_boundary(item, scene.rgnend)
         local right = reaper.SplitMediaItem(item, scene.rgnend)
@@ -1967,7 +1978,6 @@ local function apply_phrase_recording(track, item, pos, scene, cfg)
         recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
     end
 
-    local phrase_bars = math.max(1, cfg.switch_wait_bars)
     local phrase_start = phrase_start_for_recording(pos, scene, phrase_bars)
     local phrase_end = M.bars_to_time(phrase_start, phrase_bars)
     if cfg.record_end_of_bar then
@@ -2105,7 +2115,7 @@ local function activate_previous_full_scene_take(item, pos, recorded_end, scene)
     local previous_take = reaper.GetTake(item, take_count - 2)
     local last_take = reaper.GetTake(item, take_count - 1)
     if previous_take and last_take
-        and reaper.TakeIsMIDI(previous_take) == reaper.TakeIsMIDI(last_take) then
+        and reaper.TakeIsMIDI(previous_take) and reaper.TakeIsMIDI(last_take) then
         local empty_midi_take = false
         if reaper.TakeIsMIDI(last_take) then
             local _, note_count, cc_count, text_count = reaper.MIDI_CountEvts(last_take)
@@ -2148,7 +2158,7 @@ local function has_midi_events(item)
     return (notes or 0) + (cc or 0) + (text or 0) > 0
 end
 
-function M.apply_loop_source_to_new_items(existing_guids, scene)
+function M.apply_loop_source_to_new_items(existing_guids, scene, scenes)
     if not existing_guids or not scene then return 0 end
     local cfg = M.get_config()
 
@@ -2160,11 +2170,26 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
             local guid = item_guid(item)
             local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
             local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-            -- Include items that overlap with the scene: started before scene end AND
-            -- extended past scene start (covers cross-scene recordings like end of scene 5 into scene 6)
+            local item_scene = scene
+            if scenes then
+                item_scene = M.scene_at(pos, scenes)
+                if not item_scene or pos >= item_scene.rgnend then
+                    item_scene = nil
+                    for _, candidate in ipairs(scenes) do
+                        if pos < candidate.rgnend - 1e-9
+                            and pos + len > candidate.pos + 1e-9 then
+                            item_scene = candidate
+                            break
+                        end
+                    end
+                end
+            end
             if guid and not existing_guids[guid]
-                and pos < scene.rgnend - 1e-9 and (pos + len) > scene.pos + 1e-9 then
-                targets[#targets + 1] = { track = track, item = item, pos = pos }
+                and item_scene and pos < item_scene.rgnend - 1e-9
+                and (pos + len) > item_scene.pos + 1e-9 then
+                targets[#targets + 1] = {
+                    track = track, item = item, pos = pos, scene = item_scene,
+                }
             end
         end
     end
@@ -2230,11 +2255,13 @@ function M.apply_loop_source_to_new_items(existing_guids, scene)
     local processed = 0
     for _, target in ipairs(process_targets) do
         local track, item, pos = target.track, target.item, target.pos
+        local loop_scene = scene
+        local scene = target.scene
         local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
         if activate_previous_full_scene_take(item, pos, recorded_end, scene) then
             processed = processed + 1
         elseif cfg.record_auto_loop or cfg.record_backfill or cfg.record_lead_in or cfg.record_lead_out then
-            if apply_phrase_recording(track, item, pos, scene, cfg) then
+            if apply_phrase_recording(track, item, pos, scene, cfg, loop_scene) then
                 processed = processed + 1
             end
         else
