@@ -10,6 +10,7 @@
 --   [main] Scenery - Go to next scene.lua
 --   [main] Scenery - Go to previous scene.lua
 --   [main] Scenery - Settings.lua
+--   [main] Scenery - Settings UI.lua
 --   [main] Scenery - Toggle link with next scene.lua
 --   [main] Scenery - Toggle record (quantized).lua
 --   [main] Scenery - Toggle auto repeat.lua
@@ -40,7 +41,7 @@
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
 local L = dofile(script_dir .. "scenery_lib.lua")
 
-local WINDOW = { title = "Scenery", w = 260, h = 604 }
+local WINDOW = { title = "Scenery", w = 260, h = 400 }
 local SCALE = { min = 0.75, max = 1.5, step = 0.1, value = 1 }
 local ROW = { h = 26, gap = 4 }
 local PAD = 8
@@ -61,8 +62,6 @@ local mouse = { x = 0, y = 0, lclick = false, rclick = false, double = false }
 local prev_cap = 0
 local last_click = { time = 0, y = -1 }
 local scroll = 0
-local track_skip_open = false
-local track_skip_scroll = 0
 local scene_drag = nil
 
 local function logical_width()
@@ -408,212 +407,24 @@ local function draw_scene_list(scenes, top, height)
 end
 
 local function draw_status(y)
+    local settings_w = 24
+    local status_w = logical_width() - PAD * 2 - settings_w - ROW.gap
     local running = L.engine_running()
-    if button(PAD, y, logical_width() - PAD * 2, 20,
+    if button(PAD, y, status_w, 20,
             running and "Engine on" or "Engine off - click to start",
             running and COLOR.playing or COLOR.button) then
         L.start_engine(script_dir)
     end
-end
-
-local function draw_settings(y, cfg)
-    local w = logical_width() - PAD * 2
-    local step = 22
-
-    draw_label("Default bars", PAD, y, w - 84, step, COLOR.dim)
-    if button(logical_width() - PAD - 78, y, 22, step, "-") and cfg.default_bars > 1 then
-        L.set_config("default_bars", cfg.default_bars - 1)
-    end
-    draw_label(tostring(cfg.default_bars), logical_width() - PAD - 54, y, 30, step)
-    if button(logical_width() - PAD - 22, y, 22, step, "+") then
-        L.set_config("default_bars", cfg.default_bars + 1)
-    end
-
-    local label = (cfg.follow_enabled and "[x] " or "[ ] ") .. "Loop follows cursor"
-    if button(PAD, y + step + ROW.gap, w, step, label) then
-        L.set_config("follow_enabled", cfg.follow_enabled and "0" or "1")
-    end
-
-    local confirm_label = (cfg.confirm_destructive and "[x] " or "[ ] ") .. "Confirm destructive actions"
-    if button(PAD, y + (step + ROW.gap) * 2, w, step, confirm_label) then
-        L.set_config("confirm_destructive", cfg.confirm_destructive and "0" or "1")
-    end
-
-    local smooth_seek = L.get_smooth_seek()
-    local smooth_label = (smooth_seek and "[x] " or "[ ] ") .. "Smooth seek (check for smooth transitions)"
-    if button(PAD, y + (step + ROW.gap) * 3, w, step, smooth_label) then
-        L.set_smooth_seek(not smooth_seek)
-    end
-
-    local auto_loop_label = (cfg.record_auto_loop and "[x] " or "[ ] ") .. "Auto-loop new recordings"
-    if button(PAD, y + (step + ROW.gap) * 4, w, step, auto_loop_label) then
-        L.set_config("record_auto_loop", cfg.record_auto_loop and "0" or "1")
-    end
-
-    local backfill_label = (cfg.record_backfill and "[x] " or "[ ] ") .. "Back-fill auto-loops"
-    if button(PAD, y + (step + ROW.gap) * 5, w, step, backfill_label) then
-        L.set_config("record_backfill", cfg.record_backfill and "0" or "1")
-    end
-
-    local end_of_bar_label = (cfg.record_end_of_bar and "[x] " or "[ ] ") .. "Record to end of phrase"
-    if button(PAD, y + (step + ROW.gap) * 6, w, step, end_of_bar_label) then
-        L.set_config("record_end_of_bar", cfg.record_end_of_bar and "0" or "1")
-    end
-
-    local lead_in_label = (cfg.record_lead_in and "[x] " or "[ ] ") .. "Record lead-in"
-    if button(PAD, y + (step + ROW.gap) * 7, w, step, lead_in_label) then
-        L.set_config("record_lead_in", cfg.record_lead_in and "0" or "1")
-    end
-
-    local lead_out_y = y + (step + ROW.gap) * 8
-    local lead_out_label = (cfg.record_lead_out and "[x] " or "[ ] ") .. "Record lead-out"
-    if button(PAD, lead_out_y, w - 72, step, lead_out_label) then
-        L.set_config("record_lead_out", cfg.record_lead_out and "0" or "1")
-    end
-    if button(logical_width() - PAD - 68, lead_out_y, 68, step,
-        string.format("%g bars", cfg.record_lead_out_bars)) then
-        local ok, input = reaper.GetUserInputs("Lead-out duration", 1,
-            "Duration in bars:", tostring(cfg.record_lead_out_bars))
-        if ok then
-            local duration = tonumber(input)
-            if duration and duration >= 0 then
-                L.set_config("record_lead_out_bars", duration)
-            else
-                reaper.MB("Lead-out duration must be a non-negative number of bars.", "Scenery", 0)
-            end
-        end
-    end
-
-    local wait_label = (cfg.wait_for_scene_end and "[x] " or "[ ] ") .. "Wait for scene end when launching"
-    if button(PAD, y + (step + ROW.gap) * 9, w, step, wait_label) then
-        L.set_config("wait_for_scene_end", cfg.wait_for_scene_end and "0" or "1")
-    end
-
-    -- only meaningful when not already waiting for the scene to end, so greyed out then
-    local wait_bars_disabled = cfg.wait_for_scene_end
-    local wait_bars_y = y + (step + ROW.gap) * 10
-    draw_label("Phrase length", PAD, wait_bars_y, w - 84, step, COLOR.dim)
-    if button(logical_width() - PAD - 78, wait_bars_y, 22, step, "-", nil, wait_bars_disabled)
-        and cfg.switch_wait_bars > 0 then
-        L.set_config("switch_wait_bars", cfg.switch_wait_bars - 1)
-    end
-    if button(logical_width() - PAD - 54, wait_bars_y, 30, step, tostring(math.max(1, cfg.switch_wait_bars)), nil,
-        wait_bars_disabled) then
-        local ok, input = reaper.GetUserInputs("Phrase length", 1, "Length in bars:",
-            tostring(cfg.switch_wait_bars))
-        if ok then
-            L.set_config("switch_wait_bars", math.max(0, math.floor(tonumber(input) or cfg.switch_wait_bars)))
-        end
-    end
-    if button(logical_width() - PAD - 22, wait_bars_y, 22, step, "+", nil, wait_bars_disabled) then
-        L.set_config("switch_wait_bars", cfg.switch_wait_bars + 1)
-    end
-
-    local auto_repeat_label = (cfg.auto_repeat and "[x] " or "[ ] ") .. "Auto repeat on scene start"
-    if button(PAD, y + (step + ROW.gap) * 11, w, step, auto_repeat_label) then
-        L.set_config("auto_repeat", cfg.auto_repeat and "0" or "1")
-    end
-
-    local insert_label = (cfg.insert_after_current and "[x] " or "[ ] ") .. "Insert copies after current scene"
-    if button(PAD, y + (step + ROW.gap) * 12, w, step, insert_label) then
-        L.set_config("insert_after_current", cfg.insert_after_current and "0" or "1")
-    end
-
-    local skip_occupied_y = y + (step + ROW.gap) * 13
-    local skip_occupied_label = (cfg.skip_occupied_tracks and "[x] " or "[ ] ") .. "Skip occupied tracks"
-    if button(PAD, skip_occupied_y, w - 78, step, skip_occupied_label) then
-        L.set_config("skip_occupied_tracks", cfg.skip_occupied_tracks and "0" or "1")
-    end
-    if button(logical_width() - PAD - 70, skip_occupied_y, 70, step, "Tracks...") then
-        track_skip_open = true
-        track_skip_scroll = 0
-    end
-
-    local scale_y = y + (step + ROW.gap) * 14
-    draw_label("Launcher scale", PAD, scale_y, w - 84, step, COLOR.dim)
-    if button(logical_width() - PAD - 78, scale_y, 22, step, "-", nil,
-        SCALE.value <= SCALE.min) then
-        resize_window(math.max(SCALE.min, SCALE.value - SCALE.step))
-    end
-    draw_label(tostring(math.floor(SCALE.value * 100 + 0.5)) .. "%",
-        logical_width() - PAD - 54, scale_y, 30, step)
-    if button(logical_width() - PAD - 22, scale_y, 22, step, "+", nil,
-        SCALE.value >= SCALE.max) then
-        resize_window(math.min(SCALE.max, SCALE.value + SCALE.step))
-    end
-end
-
-local function skip_track_entries()
-    local entries = {}
-    for track_index = 0, reaper.CountTracks(0) - 1 do
-        local track = reaper.GetTrack(0, track_index)
-        local _, name = reaper.GetTrackName(track, "")
-        entries[#entries + 1] = {
-            guid = reaper.GetTrackGUID(track),
-            number = track_index + 1,
-            name = name ~= "" and name or "Track " .. (track_index + 1),
-        }
-    end
-    return entries
-end
-
-local function selected_track_guids(serialized)
-    local selected = {}
-    for guid in serialized:gmatch("[^|]+") do selected[guid] = true end
-    return selected
-end
-
-local function save_selected_track_guids(entries, selected)
-    local guids = {}
-    for _, entry in ipairs(entries) do
-        if selected[entry.guid] then guids[#guids + 1] = entry.guid end
-    end
-    L.set_config("skip_track_guids", table.concat(guids, "|"))
-end
-
-local function draw_track_skip_selector(cfg)
-    local width, height = logical_width(), logical_height()
-    local entries = skip_track_entries()
-    local selected = selected_track_guids(cfg.skip_track_guids)
-    local selected_count = 0
-    for _, entry in ipairs(entries) do
-        if selected[entry.guid] then selected_count = selected_count + 1 end
-    end
-
-    draw_label("Skip these tracks when copying", PAD, PAD, width - PAD * 2, 24)
-    local controls_y = PAD + 28
-    local control_gap = ROW.gap
-    local control_width = (width - PAD * 2 - control_gap * 2) / 3
-    if button(PAD, controls_y, control_width, ROW.h, "All") then
-        for _, entry in ipairs(entries) do selected[entry.guid] = true end
-        save_selected_track_guids(entries, selected)
-    end
-    if button(PAD + control_width + control_gap, controls_y, control_width, ROW.h, "None") then
-        selected = {}
-        save_selected_track_guids(entries, selected)
-    end
-    if button(PAD + (control_width + control_gap) * 2, controls_y,
-        control_width, ROW.h, "Done") then
-        track_skip_open = false
-    end
-
-    draw_label(selected_count .. " selected", PAD, controls_y + ROW.h + ROW.gap,
-        width - PAD * 2, 20, COLOR.dim)
-
-    local list_top = controls_y + ROW.h + ROW.gap + 24
-    local list_height = math.max(ROW.h, height - list_top - PAD)
-    local row_step = ROW.h + ROW.gap
-    track_skip_scroll = math.min(math.max(0, track_skip_scroll),
-        math.max(0, #entries * row_step - list_height))
-    for _, entry in ipairs(entries) do
-        local row_y = list_top + (entry.number - 1) * row_step - track_skip_scroll
-        if row_y + ROW.h > list_top and row_y < list_top + list_height then
-            local label = (selected[entry.guid] and "[x] " or "[ ] ") ..
-                entry.number .. ". " .. entry.name
-            if button(PAD, row_y, width - PAD * 2, ROW.h, label) then
-                selected[entry.guid] = not selected[entry.guid]
-                save_selected_track_guids(entries, selected)
-            end
+    local x = logical_width() - PAD - settings_w
+    panel(x, y - 2, settings_w, 24, COLOR.button, hit(x, y - 2, settings_w, 24))
+    local hovered = hit(x, y - 2, settings_w, 24)
+    draw_label("⚙", x, y - 2, settings_w, 24, hovered and COLOR.text or COLOR.dim)
+    if hovered and mouse.lclick then
+        local command_id = reaper.AddRemoveReaScript(0, script_dir .. "Scenery - Settings UI.lua", true)
+        if command_id and command_id > 0 then
+            reaper.Main_OnCommand(command_id, 0)
+        else
+            reaper.MB("Could not open Scenery Settings UI.", "Scenery", 0)
         end
     end
 end
@@ -621,8 +432,7 @@ end
 -- Draws bottom-up and returns the Y the scene list may occupy down to.
 local function draw_footer(scenes, cfg)
     local w = logical_width() - PAD * 2
-    local top = logical_height() - PAD - (22 * 2 + ROW.gap) - (20 + ROW.gap) -
-        (22 + ROW.gap) * 12 - (24 + ROW.gap) * 3 - (22 + ROW.gap) - (22 + ROW.gap)
+    local top = logical_height() - PAD - (20 + ROW.gap) - (22 + ROW.gap) - (24 + ROW.gap) * 3
     local y = top
 
     if button(PAD, y, w, 24, "+ New scene") then new_scene(cfg.default_bars) end
@@ -648,7 +458,6 @@ local function draw_footer(scenes, cfg)
     y = y + 22 + ROW.gap
 
     draw_status(y)
-    draw_settings(y + 20 + ROW.gap, cfg)
 
     return top - ROW.gap
 end
@@ -674,11 +483,7 @@ local function read_input()
     end
 
     if gfx.mouse_wheel ~= 0 then
-        if track_skip_open then
-            track_skip_scroll = track_skip_scroll - (gfx.mouse_wheel / 120) * (ROW.h + ROW.gap)
-        else
-            scroll = scroll - (gfx.mouse_wheel / 120) * (ROW.h + ROW.gap)
-        end
+        scroll = scroll - (gfx.mouse_wheel / 120) * (ROW.h + ROW.gap)
         gfx.mouse_wheel = 0
     end
 end
@@ -707,17 +512,15 @@ local function frame()
     set_color(COLOR.bg)
     gfx.rect(0, 0, gfx.w, gfx.h, 1)
 
-    if track_skip_open then
-        draw_track_skip_selector(cfg)
-        return
-    end
-
     local scenes = L.scan_scenes()
     local list_bottom = draw_footer(scenes, cfg)
     draw_scene_list(scenes, PAD, math.max(ROW.h, list_bottom - PAD))
 end
 
 local function loop()
+    local saved_scale = tonumber(reaper.GetExtState(L.EXT_SECTION, "window_scale"))
+    local wanted_scale = math.min(SCALE.max, math.max(SCALE.min, saved_scale or SCALE.value))
+    if math.abs(wanted_scale - SCALE.value) >= 0.01 then resize_window(wanted_scale) end
     read_input()
     frame()
     gfx.update()
@@ -727,7 +530,7 @@ local function loop()
     if char == 27 then
         if scene_drag then
             scene_drag = nil
-        elseif track_skip_open then track_skip_open = false else return end
+        else return end
     end
     reaper.defer(loop)
 end

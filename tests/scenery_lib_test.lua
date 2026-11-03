@@ -343,9 +343,9 @@ local tests = {
     {
         name = "launcher drag handles commit on release and Escape cancels without launching",
         run = function()
-            local function run_frames(frames, expected_moves)
+            local function run_frames(frames, expected_moves, expected_settings)
                 local fake, scenes = make_reorder_fake()
-                local move_count, launch_count, undo_count = 0, 0, 0
+                local move_count, launch_count, undo_count, settings_count = 0, 0, 0, 0
                 local pending_frame
                 local library = {
                     EXT_SECTION = scenery.EXT_SECTION,
@@ -383,6 +383,11 @@ local tests = {
                 fake.time_precise = function() return 10 end
                 fake.TrackCtl_SetToolTip = false
                 fake.JS_Window_AttachTopmostPin = false
+                fake.AddRemoveReaScript = function() return 42 end
+                fake.Main_OnCommand = function(command_id)
+                    assert_equal(command_id, 42)
+                    settings_count = settings_count + 1
+                end
                 fake.PreventUIRefresh = function() end
                 fake.UpdateArrange = function() end
                 fake.Undo_BeginBlock2 = function() undo_count = undo_count + 1 end
@@ -407,11 +412,13 @@ local tests = {
                     assert_equal(move_count, expected_moves)
                     assert_equal(undo_count, expected_moves)
                     assert_equal(launch_count, 0)
+                    assert_equal(settings_count, expected_settings or 0)
                 end)
             end
             run_frames({ { 16, 16, 1, 0 }, { 16, 135, 1, 0 }, { 16, 135, 0, -1 } }, 1)
             run_frames({ { 16, 16, 1, 0 }, { 16, 135, 1, 27 }, { 16, 135, 0, -1 } }, 0)
             run_frames({ { 16, 16, 1, 0 }, { 400, 135, 1, 0 }, { 400, 135, 0, -1 } }, 0)
+            run_frames({ { 240, 976, 1, 0 } }, 0, 1)
         end,
     },
     {
