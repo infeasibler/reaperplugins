@@ -45,6 +45,7 @@ local WINDOW = { title = "Scenery", w = 260, h = 400 }
 local SCALE = { min = 0.75, max = 1.5, step = 0.1, value = 1 }
 local ROW = { h = 26, gap = 4 }
 local PAD = 8
+local SCENE_MIN_W = 200
 local DOUBLE_CLICK_SECONDS = 0.35
 
 local COLOR = {
@@ -303,11 +304,18 @@ local function draw_scene_list(scenes, top, height)
     local active = L.active_scene(scenes)
     local next_id = L.get_next_scene_id()
     local step = ROW.h + ROW.gap
-    scroll = math.min(math.max(0, scroll), math.max(0, #scenes * step - height))
-
     local link_w = 28
     local drag_w = 22
+    local list_w = logical_width() - PAD * 2
+    local columns = math.max(1, math.floor((list_w + ROW.gap) / (SCENE_MIN_W + ROW.gap)))
+    local cell_w = (list_w - (columns - 1) * ROW.gap) / columns
+    local column_step = cell_w + ROW.gap
+    local row_count = math.ceil(#scenes / columns)
+    local content_height = row_count * step
+    scroll = math.min(math.max(0, scroll), math.max(0, content_height - height))
+
     local pointer_y = mouse.y / SCALE.value
+    local pointer_x = mouse.x / SCALE.value
     local in_list = hit(PAD, top, logical_width() - PAD * 2, height)
     local source
     if scene_drag then
@@ -326,12 +334,16 @@ local function draw_scene_list(scenes, top, height)
             local elapsed = math.min(0.1, now - scene_drag.last_frame)
             if pointer_y < top + ROW.h then scroll = scroll - elapsed * step * 8 end
             if pointer_y > top + height - ROW.h then scroll = scroll + elapsed * step * 8 end
-            scroll = math.min(math.max(0, scroll), math.max(0, #scenes * step - height))
+            scroll = math.min(math.max(0, scroll), math.max(0, content_height - height))
             scene_drag.last_frame = now
         end
         if in_list then
+            local column = math.min(columns - 1, math.max(0,
+                math.floor((pointer_x - PAD) / column_step)))
+            local row = math.max(0, math.floor((pointer_y - top + scroll) / step))
+            local cell_x = PAD + column * column_step
             drop_index = math.min(#scenes + 1, math.max(1,
-                math.floor((pointer_y - top + scroll + step / 2) / step) + 1))
+                row * columns + column + (pointer_x >= cell_x + cell_w / 2 and 2 or 1)))
             if scenes[drop_index] then
                 drop_index = L.link_chain(scenes[drop_index], scenes)[1].num
             end
@@ -353,16 +365,19 @@ local function draw_scene_list(scenes, top, height)
     if scene_drag then
         for _, member in ipairs(L.link_chain(source, scenes)) do dragged_ids[member.id] = true end
     end
-    for _, scene in ipairs(scenes) do
-        local y = top + (scene.num - 1) * step - scroll
+    for index, scene in ipairs(scenes) do
+        local column = (index - 1) % columns
+        local row = math.floor((index - 1) / columns)
+        local cell_x = PAD + column * column_step
+        local y = top + row * step - scroll
         if y >= top and y + ROW.h <= top + height then
-            local x = PAD + drag_w + ROW.gap
-            local w = logical_width() - PAD * 2 - link_w - drag_w - ROW.gap * 2
-            local handle_hovered = hit(PAD, y, drag_w, ROW.h)
-            panel(PAD, y, drag_w, ROW.h, COLOR.button, handle_hovered)
+            local x = cell_x + drag_w + ROW.gap
+            local w = cell_w - drag_w - link_w - ROW.gap * 2
+            local handle_hovered = hit(cell_x, y, drag_w, ROW.h)
+            panel(cell_x, y, drag_w, ROW.h, COLOR.button, handle_hovered)
             set_color(dragged_ids[scene.id] and COLOR.next or COLOR.dim)
             for line_index = 0, 2 do
-                gfx.rect((PAD + 5) * SCALE.value, (y + 8 + line_index * 4) * SCALE.value,
+                gfx.rect((cell_x + 5) * SCALE.value, (y + 8 + line_index * 4) * SCALE.value,
                     12 * SCALE.value, math.max(1, SCALE.value), 1)
             end
             if handle_hovered and not scene_drag then
@@ -397,11 +412,27 @@ local function draw_scene_list(scenes, top, height)
         end
     end
     if drop_index then
-        local line_y = top + (drop_index - 1) * step - scroll - ROW.gap / 2
-        if line_y >= top - 2 and line_y <= top + height then
+        local column, row, line_x
+        if drop_index <= #scenes then
+            column = (drop_index - 1) % columns
+            row = math.floor((drop_index - 1) / columns)
+            line_x = PAD + column * column_step - ROW.gap / 2
+        else
+            local last_column = (#scenes - 1) % columns
+            local last_row = math.floor((#scenes - 1) / columns)
+            if last_column < columns - 1 then
+                column, row = last_column, last_row
+                line_x = PAD + column * column_step + cell_w + ROW.gap / 2
+            else
+                column, row = 0, last_row + 1
+                line_x = PAD - ROW.gap / 2
+            end
+        end
+        local line_y = top + row * step - scroll
+        if line_y >= top - ROW.h and line_y <= top + height then
             set_color(COLOR.next)
-            gfx.rect(PAD * SCALE.value, line_y * SCALE.value,
-                (logical_width() - PAD * 2) * SCALE.value, 2 * SCALE.value, 1)
+            gfx.rect(line_x * SCALE.value, line_y * SCALE.value,
+                2 * SCALE.value, ROW.h * SCALE.value, 1)
         end
     end
 end
