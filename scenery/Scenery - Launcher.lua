@@ -420,7 +420,8 @@ local function draw_status(y)
     local hovered = hit(x, y - 2, settings_w, 24)
     draw_label("⚙", x, y - 2, settings_w, 24, hovered and COLOR.text or COLOR.dim)
     if hovered and mouse.lclick then
-        local command_id = reaper.AddRemoveReaScript(0, script_dir .. "Scenery - Settings UI.lua", true)
+        local command_id = reaper.AddRemoveReaScript(true, 0,
+            script_dir .. "Scenery - Settings UI.lua", true)
         if command_id and command_id > 0 then
             reaper.Main_OnCommand(command_id, 0)
         else

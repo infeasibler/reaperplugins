@@ -383,7 +383,13 @@ local tests = {
                 fake.time_precise = function() return 10 end
                 fake.TrackCtl_SetToolTip = false
                 fake.JS_Window_AttachTopmostPin = false
-                fake.AddRemoveReaScript = function() return 42 end
+                fake.AddRemoveReaScript = function(add, section_id, script_path, commit)
+                    assert_equal(add, true)
+                    assert_equal(section_id, 0)
+                    assert_equal(script_path, "scenery/Scenery - Settings UI.lua")
+                    assert_equal(commit, true)
+                    return 42
+                end
                 fake.Main_OnCommand = function(command_id)
                     assert_equal(command_id, 42)
                     settings_count = settings_count + 1
