@@ -1069,6 +1069,27 @@ local tests = {
         end,
     },
     {
+        name = "recording does not start the engine",
+        run = function()
+            local fake = make_state_fake()
+            local record_command_count = 0
+            fake.GetPlayState = function() return 0 end
+            fake.Main_OnCommand = function(command_id)
+                assert_equal(command_id, 1013)
+                record_command_count = record_command_count + 1
+            end
+
+            with_fake_reaper(fake, function()
+                scenery.toggle_record({
+                    record_auto_loop = true,
+                    record_end_of_bar = true,
+                })
+                assert_equal(record_command_count, 1)
+                assert_equal(fake.GetExtState(scenery.EXT_SECTION, "engine_running"), "")
+            end)
+        end,
+    },
+    {
         name = "quantized recording stop uses configured lead-out duration",
         run = function()
             local fake = make_state_fake()
@@ -1091,24 +1112,24 @@ local tests = {
                     record_lead_out_bars = 0.5,
                     switch_wait_bars = 4,
                 }
-                scenery.toggle_record(cfg, "")
+                scenery.toggle_record(cfg)
                 assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 16.02)
 
                 cfg.record_lead_out = true
-                scenery.toggle_record(cfg, "")
+                scenery.toggle_record(cfg)
                 assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 18.02)
 
                 cfg.record_lead_out_bars = 1
-                scenery.toggle_record(cfg, "")
+                scenery.toggle_record(cfg)
                 assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 20.02)
 
                 fake.cursor_position = 16
                 cfg.record_lead_out = false
-                scenery.toggle_record(cfg, "")
+                scenery.toggle_record(cfg)
                 assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 16.02)
 
                 cfg.record_lead_out = true
-                scenery.toggle_record(cfg, "")
+                scenery.toggle_record(cfg)
                 assert_equal(tonumber(fake.values[scenery.EXT_SECTION .. ":pending_record_stop"]), 20.02)
             end)
         end,

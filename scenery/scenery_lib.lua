@@ -898,13 +898,9 @@ function M.start_engine(script_dir)
     return true
 end
 
--- Shared by the launcher's Rec button and the standalone action. Starting is
--- immediate (native Record command/button can't be intercepted for a
--- quantized start). Stopping, when record-to-end-of-phrase is on, is deferred
--- to the engine so nothing recorded in the current phrase is lost - see
--- request_quantized_stop/due_record_stop. This is independent of auto-loop,
--- which only controls whether finished recordings get bar-aligned/looped.
-function M.toggle_record(cfg, script_dir)
+-- Shared by the launcher's Rec button and the standalone action. Recording is
+-- always toggled immediately; the engine is never started implicitly.
+function M.toggle_record(cfg)
     if M.is_recording() then
         if cfg.record_end_of_bar and M.engine_running() then
             local lead_out_bars = cfg.record_lead_out
@@ -914,9 +910,6 @@ function M.toggle_record(cfg, script_dir)
             reaper.Main_OnCommand(1013, 0)
         end
         return
-    end
-    if (cfg.record_auto_loop or cfg.record_end_of_bar) and not M.engine_running() then
-        M.start_engine(script_dir)
     end
     reaper.Main_OnCommand(1013, 0)
 end

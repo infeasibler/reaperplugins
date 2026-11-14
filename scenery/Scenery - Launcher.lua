@@ -486,7 +486,7 @@ local function draw_footer(scenes, cfg)
     if button(PAD, y, third, 22, "Play") then reaper.Main_OnCommand(1007, 0) end
     if button(PAD + third + ROW.gap, y, third, 22, "Stop") then reaper.Main_OnCommand(1016, 0) end
     local rec_label, rec_color = record_button_state()
-    if button(PAD + (third + ROW.gap) * 2, y, third, 22, rec_label, rec_color) then L.toggle_record(cfg, script_dir) end
+    if button(PAD + (third + ROW.gap) * 2, y, third, 22, rec_label, rec_color) then L.toggle_record(cfg) end
     y = y + 22 + ROW.gap
 
     draw_status(y)

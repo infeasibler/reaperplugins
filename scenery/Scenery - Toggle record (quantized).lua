@@ -10,4 +10,4 @@
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
 local L = dofile(script_dir .. "scenery_lib.lua")
 
-L.toggle_record(L.get_config(), script_dir)
+L.toggle_record(L.get_config())
