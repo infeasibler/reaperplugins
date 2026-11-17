@@ -1398,6 +1398,7 @@ local tests = {
             fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
             fake.values[scenery.EXT_SECTION .. ":switch_wait_bars"] = "4"
             local fail_split_at = nil
+            local reject_negative_positions = false
             local track = { items = {} }
             local item = { guid = "{recorded}", pos = 12, len = 20 }
             track.items[1] = item
@@ -1427,6 +1428,11 @@ local tests = {
                         chunk = chunk .. string.format("NOTE %d %d %.17g %.17g %d %d %d\n",
                             note.selected and 1 or 0, note.muted and 1 or 0,
                             note.start_ppq, note.end_ppq, note.channel, note.pitch, note.velocity)
+                    end
+                elseif target.take and target.take.samples then
+                    chunk = chunk .. "AUDIO 1\n"
+                    for _, sample in ipairs(target.take.samples) do
+                        chunk = chunk .. string.format("SAMPLE %.17g\n", sample)
                     end
                 end
                 return true, chunk
@@ -1468,6 +1474,19 @@ local tests = {
                         end
                     end
                     target.take.notes = left_notes
+                    if target.take.samples then
+                        local left_samples = {}
+                        right.take.samples = {}
+                        for _, sample in ipairs(target.take.samples) do
+                            if sample < split_pos - target.pos then
+                                left_samples[#left_samples + 1] = sample
+                            else
+                                right.take.samples[#right.take.samples + 1] =
+                                    sample - (split_pos - target.pos)
+                            end
+                        end
+                        target.take.samples = left_samples
+                    end
                 end
                 target.len = split_pos - target.pos
                 track.items[#track.items + 1] = right
@@ -1500,14 +1519,25 @@ local tests = {
                             velocity = tonumber(velocity),
                         }
                     end
+                elseif chunk:match("\nAUDIO 1\n") then
+                    target.take = { is_midi = false, samples = {} }
+                    for sample in chunk:gmatch("SAMPLE ([^\n]+)") do
+                        target.take.samples[#target.take.samples + 1] = tonumber(sample)
+                    end
                 end
                 return true
             end
             fake.SetMediaItemInfo_Value = function(target, key, value)
-                if key == "D_POSITION" then target.pos = value end
+                if key == "D_POSITION" then
+                    if reject_negative_positions and value < 0 then return false end
+                    target.pos = value
+                end
                 if key == "D_SNAPOFFSET" then target.snap_offset = value end
+                return true
             end
             fake.GetActiveTake = function(target) return target.take end
+            fake.TakeIsMIDI = function(take) return take and take.is_midi end
+            fake.ValidatePtr2 = function() return true end
             fake.CountTakes = function() return 0 end
             fake.SetMediaItemLength = function(target, length) target.len = length end
             fake.UpdateItemInProject = function() end
@@ -1539,6 +1569,7 @@ local tests = {
                 local start_pos, end_pos = math.huge, -math.huge
                 local source_notes = {}
                 local has_midi_take = false
+                local audio_samples = {}
                 for _, candidate in ipairs(track.items) do
                     if candidate.selected then
                         start_pos = math.min(start_pos, candidate.pos)
@@ -1557,6 +1588,10 @@ local tests = {
                                     project_start = note_start,
                                     project_end = note_end,
                                 }
+                            end
+                        elseif candidate.take and candidate.take.samples then
+                            for _, sample in ipairs(candidate.take.samples) do
+                                audio_samples[#audio_samples + 1] = candidate.pos + sample
                             end
                         end
                     end
@@ -1586,10 +1621,159 @@ local tests = {
                     end
                     glued_item.take = { is_midi = true, notes = merged_notes }
                     glued_item.take.item = glued_item
+                elseif #audio_samples > 0 then
+                    glued_item.take = { is_midi = false, samples = {} }
+                    table.sort(audio_samples)
+                    for _, sample in ipairs(audio_samples) do
+                        glued_item.take.samples[#glued_item.take.samples + 1] = sample - start_pos
+                    end
                 end
                 track.items[#track.items + 1] = glued_item
             end
 
+            for _, lead_in in ipairs({ "0", "1" }) do
+                for _, lead_out in ipairs({ "0", "1" }) do
+                    for _, start_offset in ipairs({ 0, 0.04 }) do
+                        for _, wrapped in ipairs({ false, true }) do
+                            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = lead_in
+                            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = lead_out
+                            local tail = {
+                                guid = "{audio-phrase}", pos = 16 + start_offset,
+                                len = 16 - start_offset,
+                                take = { is_midi = false, samples = { 1, 15 } },
+                            }
+                            local body = {
+                                guid = "{audio-stop-margin}", pos = 0, len = 0.044,
+                                take = { is_midi = false, samples = { 0.02 } },
+                            }
+                            track.items = wrapped and { body, tail } or { tail }
+                            with_fake_reaper(fake, function()
+                                local processed = scenery.apply_loop_source_to_new_items({}, {
+                                    pos = 0, rgnend = 32,
+                                })
+                                assert_equal(processed, 1)
+                                assert_equal(#track.items, 2)
+                                local original, copy = track.items[1], track.items[2]
+                                assert_equal(math.abs(original.pos - 16 - start_offset) < 1e-9, true)
+                                assert_equal(math.abs(copy.pos - start_offset) < 1e-9, true)
+                                assert_equal(original.take.samples[1], 1)
+                                assert_equal(original.take.samples[2], 15)
+                                assert_equal(copy.take.samples[1], 1)
+                                assert_equal(copy.take.samples[2], 15)
+                                if lead_out == "1" and wrapped then
+                                    local expected = 16.02 - start_offset
+                                    assert_equal(math.abs(original.take.samples[3] - expected) < 1e-9, true)
+                                    assert_equal(math.abs(copy.take.samples[3] - expected) < 1e-9, true)
+                                else
+                                    assert_equal(#original.take.samples, 2)
+                                    assert_equal(#copy.take.samples, 2)
+                                end
+                            end)
+                        end
+                    end
+                end
+            end
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
+
+            for _, scene_start in ipairs({ 0, 2 }) do
+                local pickup_audio = {
+                    guid = "{audio-pickup-at-project-start}", pos = 12, len = 20,
+                    take = { is_midi = false, samples = { 1, 5, 19 } },
+                }
+                track.items = { pickup_audio }
+                reject_negative_positions = true
+                with_fake_reaper(fake, function()
+                    assert_equal(scenery.apply_loop_source_to_new_items({}, {
+                        pos = scene_start, rgnend = 32,
+                    }), 1)
+                    assert_equal(#track.items, 2)
+                    local copy = track.items[2]
+                    assert_equal(copy.pos, 0)
+                    assert_equal(copy.len, 16 + scene_start)
+                    assert_equal(copy.snap_offset, scene_start)
+                    assert_equal(#copy.take.samples, 2)
+                    assert_equal(copy.take.samples[1], 1 + scene_start)
+                    assert_equal(copy.take.samples[2], 15 + scene_start)
+                    assert_equal(pickup_audio.pos, 12)
+                end)
+            end
+            reject_negative_positions = false
+
+            local untrimmed_audio = {
+                guid = "{failed-project-start-trim}", pos = 12, len = 20,
+                take = { is_midi = false, samples = { 5 } },
+            }
+            track.items = { untrimmed_audio }
+            fail_split_at = 16
+            with_fake_reaper(fake, function()
+                local ok, message = pcall(scenery.apply_loop_source_to_new_items, {}, {
+                    pos = 0, rgnend = 32,
+                })
+                assert_equal(ok, false)
+                assert_equal(message:find("Could not trim a back-fill copy at the project start", 1, true) ~= nil, true)
+                assert_equal(#track.items, 1)
+                assert_equal(track.items[1], untrimmed_audio)
+                assert_equal(untrimmed_audio.pos, 12)
+            end)
+            fail_split_at = nil
+
+            local slightly_late_audio = {
+                guid = "{slightly-late-audio}", pos = 16.04, len = 15.96,
+                take = { is_midi = false, samples = { 1 } },
+            }
+            track.items = { slightly_late_audio }
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0, rgnend = 64,
+                }), 1)
+                assert_equal(#track.items, 4)
+                for index, expected in ipairs({ 16.04, 0.04, 32.04, 48.04 }) do
+                    assert_equal(math.abs(track.items[index].pos - expected) < 1e-9, true)
+                    assert_equal(track.items[index].take.samples[1], 1)
+                end
+            end)
+
+            local failed_tail = {
+                guid = "{failed-audio-tail}", pos = 16, len = 16,
+                take = { is_midi = false, samples = { 1 } },
+            }
+            local failed_body = {
+                guid = "{failed-audio-body}", pos = 0, len = 0.044,
+                take = { is_midi = false, samples = { 0.02 } },
+            }
+            track.items = { failed_body, failed_tail }
+            perform_glue = false
+            with_fake_reaper(fake, function()
+                local ok, message = pcall(scenery.apply_loop_source_to_new_items, {}, {
+                    pos = 0, rgnend = 32,
+                })
+                assert_equal(ok, false)
+                assert_equal(message:find("Could not join the recorded audio", 1, true) ~= nil, true)
+                assert_equal(failed_body.pos, 0)
+                assert_equal(failed_tail.pos, 16)
+            end)
+            perform_glue = true
+
+            local long_wrap_tail = {
+                guid = "{long-audio-wrap-tail}", pos = 60, len = 4,
+                take = { is_midi = false, samples = { 1 } },
+            }
+            local long_wrap_body = {
+                guid = "{long-audio-wrap-body}", pos = 0, len = 16,
+                take = { is_midi = false, samples = { 1 } },
+            }
+            track.items = { long_wrap_body, long_wrap_tail }
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.apply_loop_source_to_new_items({}, {
+                    pos = 0, rgnend = 64,
+                }), 1)
+                assert_equal(track.items[1].pos, -4)
+                assert_equal(track.items[1].take.samples[1], 1)
+                assert_equal(track.items[1].take.samples[2], 5)
+            end)
+
+            track.items = { item }
             with_fake_reaper(fake, function()
                 local processed = scenery.apply_loop_source_to_new_items({}, {
                     pos = 0,
@@ -1598,9 +1782,9 @@ local tests = {
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 4)
                 assert_equal(track.items[1].snap_offset, 4)
-                assert_equal(track.items[2].pos, -4)
-                assert_equal(track.items[2].len, 20)
-                assert_equal(track.items[2].snap_offset, 4)
+                assert_equal(track.items[2].pos, 0)
+                assert_equal(track.items[2].len, 16)
+                assert_equal(track.items[2].snap_offset, 0)
                 assert_equal(track.items[3].pos, 28)
                 assert_equal(track.items[3].snap_offset, 4)
                 assert_equal(track.items[4].pos, 44)
@@ -1982,10 +2166,10 @@ local tests = {
                 })
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 4)
-                assert_equal(track.items[2].pos, -4)
-                assert_equal(track.items[2].len, 21)
+                assert_equal(track.items[2].pos, 0)
+                assert_equal(track.items[2].len, 17)
                 assert_equal(#track.items[2].take.notes, 1)
-                assert_equal(track.items[2].take.notes[1].end_ppq, 2100)
+                assert_equal(track.items[2].take.notes[1].end_ppq, 1700)
                 assert_equal(track.items[3].pos, 28)
                 assert_equal(track.items[3].len, 21)
                 assert_equal(track.items[3].take.notes[1].end_ppq, 2100)
@@ -2018,12 +2202,12 @@ local tests = {
                 })
                 assert_equal(processed, 1)
                 assert_equal(#track.items, 1)
-                assert_equal(track.items[1].pos, -12)
+                assert_equal(track.items[1].pos, 0)
                 local crossing_note_found = false
                 for _, note in ipairs(track.items[1].take.notes) do
                     local note_start = track.items[1].pos + note.start_ppq / 100
                     local note_end = track.items[1].pos + note.end_ppq / 100
-                    if math.abs(note_start + 0.5) < 1e-9
+                    if math.abs(note_start) < 1e-9
                         and math.abs(note_end - 64.5) < 1e-9 then
                         crossing_note_found = true
                     end

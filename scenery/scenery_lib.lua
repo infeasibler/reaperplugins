@@ -1819,11 +1819,11 @@ local function glue_phrase_items(items)
     return outputs[1]
 end
 
-local function phrase_start_for_recording(pos, scene, phrase_bars)
+local function phrase_start_for_recording(pos, scene, phrase_bars, tolerance)
     local measure = M.measure_at(pos)
     local phrase_measure = math.floor(measure / phrase_bars) * phrase_bars
     local phrase_start = M.measure_start_time(phrase_measure)
-    if pos > phrase_start + 1e-9 then
+    if pos > phrase_start + (tolerance or 1e-9) then
         phrase_start = M.measure_start_time(phrase_measure + phrase_bars)
     end
     return math.max(scene.pos, phrase_start)
@@ -1849,7 +1849,7 @@ local function create_phrase_item(track, item, phrase_start, phrase_end,
         end
         reaper.DeleteTrackMediaItem(track, phrase_item)
         phrase_item = right
-    elseif item_pos > phrase_start + 1e-9 then
+    elseif item_pos > phrase_start + 0.2 then
         reaper.DeleteTrackMediaItem(track, phrase_item)
         return nil
     end
@@ -1890,31 +1890,57 @@ local function backfill_loop_source(track, item, scene, phrase_start, phrase_end
     if math.abs(item_pos - phrase_start) > 1e-9 or math.abs(item_end - phrase_end) > 1e-9 then
         phrase_item = create_phrase_item(track, item, phrase_start, phrase_end,
             preserve_lead_in, preserve_lead_out)
-        if not phrase_item then return end
+        if not phrase_item then
+            error("Scenery: Could not prepare the recorded phrase for back-fill.")
+        end
         temporary_phrase_item = true
     end
 
     local dest = phrase_start
     while dest > scene.pos + 1e-9 do
         local chunk = linked_chunk(phrase_item)
-        if not chunk then break end
+        if not chunk then
+            if temporary_phrase_item then reaper.DeleteTrackMediaItem(track, phrase_item) end
+            error("Scenery: Could not read the recorded phrase for back-fill.")
+        end
         local phrase_item_pos = reaper.GetMediaItemInfo_Value(phrase_item, "D_POSITION")
         local anchor = preserve_lead_in and math.max(scene.pos, dest - unit) or dest - unit
         local tile_start = anchor + phrase_item_pos - phrase_start
         local tile = reaper.AddMediaItemToTrack(track)
-        reaper.SetItemStateChunk(tile, chunk, false)
-        reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_start)
+        if not reaper.SetItemStateChunk(tile, chunk, false) then
+            reaper.DeleteTrackMediaItem(track, tile)
+            if temporary_phrase_item then reaper.DeleteTrackMediaItem(track, phrase_item) end
+            error("Scenery: Could not create a back-fill copy.")
+        end
         local retained_tile = tile
-        if not preserve_lead_in and tile_start < scene.pos - 1e-9 then
-            local right = reaper.SplitMediaItem(tile, scene.pos)
+        if tile_start < -1e-9 then
+            local right = reaper.SplitMediaItem(tile, phrase_item_pos - tile_start)
             if not right then
                 reaper.DeleteTrackMediaItem(track, tile)
                 if temporary_phrase_item then
                     reaper.DeleteTrackMediaItem(track, phrase_item)
                 end
-                error("Scenery: Could not trim a back-fill copy at the scene start.")
+                error("Scenery: Could not trim a back-fill copy at the project start.")
             end
             reaper.DeleteTrackMediaItem(track, tile)
+            retained_tile = right
+            tile_start = 0
+        end
+        if not reaper.SetMediaItemInfo_Value(retained_tile, "D_POSITION", tile_start) then
+            reaper.DeleteTrackMediaItem(track, retained_tile)
+            if temporary_phrase_item then reaper.DeleteTrackMediaItem(track, phrase_item) end
+            error("Scenery: Could not position a back-fill copy.")
+        end
+        if not preserve_lead_in and tile_start < scene.pos - 1e-9 then
+            local right = reaper.SplitMediaItem(retained_tile, scene.pos)
+            if not right then
+                reaper.DeleteTrackMediaItem(track, retained_tile)
+                if temporary_phrase_item then
+                    reaper.DeleteTrackMediaItem(track, phrase_item)
+                end
+                error("Scenery: Could not trim a back-fill copy at the scene start.")
+            end
+            reaper.DeleteTrackMediaItem(track, retained_tile)
             retained_tile = right
         end
         if preserve_lead_in then
@@ -1933,13 +1959,16 @@ end
 local function apply_phrase_recording(track, item, pos, scene, cfg, loop_scene)
     local recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
     local phrase_bars = math.max(1, cfg.switch_wait_bars)
+    local initial_take = reaper.GetActiveTake(item)
+    local start_tolerance = cfg.record_backfill and initial_take
+        and not reaper.TakeIsMIDI(initial_take) and 0.2 or 1e-9
     -- A stop margin or lead-out beyond the region is not a wrapped phrase.
     -- Only a pickup whose phrase starts at the transport loop end wraps back.
     if pos > scene.pos + 1e-9 and pos < scene.rgnend - 1e-9
         and recorded_end > scene.rgnend + 0.2
         and math.abs(scene.pos - loop_scene.pos) < 1e-9
         and math.abs(scene.rgnend - loop_scene.rgnend) < 1e-9
-        and phrase_start_for_recording(pos, scene, phrase_bars) >= scene.rgnend - 1e-9 then
+        and phrase_start_for_recording(pos, scene, phrase_bars, start_tolerance) >= scene.rgnend - 1e-9 then
         local boundary_notes = cfg.record_lead_in and {}
             or midi_notes_crossing_boundary(item, scene.rgnend)
         local right = reaper.SplitMediaItem(item, scene.rgnend)
@@ -1971,7 +2000,7 @@ local function apply_phrase_recording(track, item, pos, scene, cfg, loop_scene)
         recorded_end = pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
     end
 
-    local phrase_start = phrase_start_for_recording(pos, scene, phrase_bars)
+    local phrase_start = phrase_start_for_recording(pos, scene, phrase_bars, start_tolerance)
     local phrase_end = M.bars_to_time(phrase_start, phrase_bars)
     if cfg.record_end_of_bar then
         local capture_end = M.snap_to_bar(recorded_end, "next", 0.2)
@@ -2063,7 +2092,7 @@ local function apply_phrase_recording(track, item, pos, scene, cfg, loop_scene)
         local tile = reaper.AddMediaItemToTrack(track)
         reaper.SetItemStateChunk(tile, chunk, false)
         phrase_items[#phrase_items + 1] = tile
-        local tile_pos = dest_anchor - lead_in
+        local tile_pos = dest_anchor + pos - phrase_start
         reaper.SetMediaItemInfo_Value(tile, "D_POSITION", tile_pos)
         if lead_in > 0 then
             reaper.SetMediaItemInfo_Value(tile, "D_SNAPOFFSET", lead_in)
@@ -2204,6 +2233,19 @@ function M.apply_loop_source_to_new_items(existing_guids, scene, scenes)
                 end
             end
             local body_take = body and reaper.GetActiveTake(body.item)
+            local tail_take = reaper.GetActiveTake(tail.item)
+            local phrase_start = phrase_start_for_recording(tail.pos, tail.scene,
+                math.max(1, cfg.switch_wait_bars),
+                tail_take and not reaper.TakeIsMIDI(tail_take) and 0.2 or 1e-9)
+            -- A short post-wrap stop margin belongs after a completed audio phrase,
+            -- not at the start of a new phrase with the whole tail as its pickup.
+            local completed_audio_phrase = cfg.record_backfill and cfg.record_end_of_bar
+                and body_take and tail_take
+                and not reaper.TakeIsMIDI(body_take) and not reaper.TakeIsMIDI(tail_take)
+                and reaper.GetMediaItemInfo_Value(body.item, "D_LENGTH") <= 0.2
+                and math.abs(tail.scene.rgnend - scene.rgnend) <= 1e-9
+                and M.bars_to_time(phrase_start, math.max(1, cfg.switch_wait_bars))
+                    <= scene.rgnend + 1e-9
             if body_take and reaper.TakeIsMIDI(body_take) and not cfg.record_lead_in
                 and reaper.GetMediaItemInfo_Value(body.item, "D_LENGTH") <= 0.2
                 and not has_midi_events(body.item) and has_midi_events(tail.item) then
@@ -2212,7 +2254,20 @@ function M.apply_loop_source_to_new_items(existing_guids, scene, scenes)
                 body = nil
             end
             if body then
-                if cfg.record_lead_in then
+                if completed_audio_phrase then
+                    reaper.SetMediaItemInfo_Value(body.item, "D_POSITION",
+                        scene.rgnend + body.pos - scene.pos)
+                    local combined = glue_phrase_items({ tail.item, body.item })
+                    if not combined then
+                        if reaper.ValidatePtr2(0, body.item, "MediaItem*") then
+                            reaper.SetMediaItemInfo_Value(body.item, "D_POSITION", body.pos)
+                        end
+                        error("Scenery: Could not join the recorded audio across the loop boundary.")
+                    end
+                    tail.item = combined
+                    tail.pos = reaper.GetMediaItemInfo_Value(combined, "D_POSITION")
+                    skipped_targets[body] = true
+                elseif cfg.record_lead_in then
                     local lead_in = reaper.GetMediaItemInfo_Value(tail.item, "D_LENGTH")
                     reaper.SetMediaItemInfo_Value(tail.item, "D_POSITION", scene.pos - lead_in)
                     reaper.SetMediaItemInfo_Value(body.item, "D_POSITION", scene.pos)
