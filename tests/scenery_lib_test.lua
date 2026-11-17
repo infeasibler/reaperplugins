@@ -1307,14 +1307,18 @@ local tests = {
                 make_scene(2, 128, 160, true),
                 make_scene(3, 160, 192),
             }
-            local snapshot = {}
+            local snapshot
+            local live_guids = { existing = true }
+            local project, project_revision = {}, 1
+            local snapshot_calls = 0
             local recording, now, pending_frame = false, 0, nil
+            local current_scene = scenes[1]
             local processed, refreshed = 0, 0
             local ui_balance, undo_balance = 0, 0
             local errors = {}
             local library = {
                 EXT_SECTION = scenery.EXT_SECTION,
-                active_scene = function() return scenes[1] end,
+                active_scene = function() return current_scene end,
                 chain_bounds = function() return 96, 192 end,
                 scan_scenes = function() return scenes end,
                 is_recording = function() return recording end,
@@ -1324,18 +1328,27 @@ local tests = {
                 end,
                 latest_midi_input_sequence = function() return 0 end,
                 recent_midi_input_events_after = function() return {}, 0 end,
-                snapshot_item_guids = function() return snapshot end,
+                snapshot_item_guids = function()
+                    snapshot_calls = snapshot_calls + 1
+                    snapshot = {}
+                    for guid in pairs(live_guids) do snapshot[guid] = true end
+                    return snapshot
+                end,
                 wrapped_midi_input_notes = function(_, loop_range)
                     assert_equal(loop_range.pos, 96)
                     assert_equal(loop_range.rgnend, 192)
                     return {}
                 end,
                 apply_wrapped_midi_notes_to_new_items = function() return 0 end,
-                apply_loop_source_to_new_items = function(existing, loop_range, recording_scenes)
+                apply_loop_source_to_new_items = function(existing, loop_range, recording_scenes, destination)
                     assert_equal(existing, snapshot)
+                    assert_equal(existing.existing, true)
+                    assert_equal(existing.added_before_recording, true)
+                    assert_equal(existing.recorded, nil)
                     assert_equal(loop_range.pos, 96)
                     assert_equal(loop_range.rgnend, 192)
                     assert_equal(recording_scenes, scenes)
+                    assert_equal(destination, scenes[2])
                     processed = processed + 1
                     return 1
                 end,
@@ -1347,6 +1360,8 @@ local tests = {
             fake.get_action_context = function()
                 return false, "scenery/Scenery - Engine (toggle).lua", 0, 1
             end
+            fake.EnumProjects = function() return project end
+            fake.GetProjectStateChangeCount = function() return project_revision end
             fake.SetToggleCommandState = function() end
             fake.RefreshToolbar2 = function() end
             fake.PreventUIRefresh = function(change) ui_balance = ui_balance + change end
@@ -1362,8 +1377,21 @@ local tests = {
             }, { __index = _G })
             with_fake_reaper(fake, function()
                 assert(loadfile("scenery/Scenery - Engine (toggle).lua", "t", environment))()
+                assert_equal(snapshot_calls, 1)
+                now = 0.5
+                pending_frame()
+                assert_equal(snapshot_calls, 1)
+                live_guids.added_before_recording = true
+                project_revision, now = 2, 0.75
+                pending_frame()
+                assert_equal(snapshot_calls, 2)
+                live_guids.recorded = true
+                project_revision = 3
                 recording, now = true, 1
                 pending_frame()
+                current_scene, now = scenes[2], 1.5
+                pending_frame()
+                current_scene = scenes[1]
                 recording, now = false, 2
                 pending_frame()
                 assert_equal(processed, 1)
@@ -1386,6 +1414,58 @@ local tests = {
                 now = 5
                 pending_frame()
                 assert_equal(#errors, 1)
+
+                local previous_snapshot_calls = snapshot_calls
+                project, now = {}, 6
+                pending_frame()
+                assert_equal(snapshot_calls, previous_snapshot_calls + 1)
+                recording, now = true, 7
+                pending_frame()
+                project, recording, now = {}, false, 8
+                pending_frame()
+                assert_equal(#errors, 2)
+                assert_equal(errors[2]:find("active project changed", 1, true) ~= nil, true)
+                assert_equal(refreshed, 2)
+
+                project, recording, now = {}, true, 9
+                pending_frame()
+                assert_equal(#errors, 3)
+                assert_equal(errors[3]:find("without a pre-recording item snapshot", 1, true) ~= nil, true)
+                recording, now = false, 10
+                pending_frame()
+                assert_equal(refreshed, 2)
+
+                local diagnostic_track = {
+                    items = {
+                        { guid = "recorded", pos = 140, len = 4 },
+                        { guid = "fresh", pos = 144, len = 16 },
+                        { pos = 150, len = 2 },
+                    },
+                }
+                fake.CountTracks = function() return 1 end
+                fake.GetTrack = function() return diagnostic_track end
+                fake.GetMediaTrackInfo_Value = function() return 1 end
+                fake.CountTrackMediaItems = function(track) return #track.items end
+                fake.GetTrackMediaItem = function(track, index) return track.items[index + 1] end
+                fake.GetSetMediaItemInfo_String = function(item)
+                    return item.guid ~= nil, item.guid or ""
+                end
+                fake.GetMediaItemInfo_Value = function(item, key)
+                    return key == "D_POSITION" and item.pos or item.len
+                end
+                fake.CountTakes = function() return 1 end
+                library.scene_at = function() return scenes[2] end
+                library.apply_loop_source_to_new_items = function() return 0 end
+                recording, now = true, 11
+                pending_frame()
+                recording, now = false, 12
+                pending_frame()
+                assert_equal(#errors, 4)
+                assert_equal(errors[4]:find("processed 0 items", 1, true) ~= nil, true)
+                assert_equal(errors[4]:find("GUID existing", 1, true) ~= nil, true)
+                assert_equal(errors[4]:find("GUID new", 1, true) ~= nil, true)
+                assert_equal(errors[4]:find("GUID unavailable", 1, true) ~= nil, true)
+                assert_equal(errors[4]:find("New item GUIDs: 1", 1, true) ~= nil, true)
             end)
         end,
     },
@@ -1838,6 +1918,148 @@ local tests = {
                 end
             end
 
+            local adjacent_scenes = {
+                make_scene(1, 0, 32, true),
+                make_scene(2, 32, 64),
+            }
+            for _, destination in ipairs({ false, true }) do
+                for _, offset in ipairs({ -5e-10, 0, 5e-10 }) do
+                    local boundary_recording = {
+                        guid = "{scene-boundary-audio}", pos = 32 + offset, len = 18,
+                        take = { is_midi = false, samples = { 1, 15, 17 } },
+                    }
+                    track.items = { boundary_recording }
+                    with_fake_reaper(fake, function()
+                        assert_equal(scenery.apply_loop_source_to_new_items({},
+                            { pos = 0, rgnend = 32 }, adjacent_scenes,
+                            destination and adjacent_scenes[2] or nil), 1)
+                        assert_equal(#track.items, 2)
+                        assert_equal(track.items[1], boundary_recording)
+                        assert_equal(math.abs(track.items[1].pos - 32) < 1e-9, true)
+                        assert_equal(math.abs(track.items[2].pos - 48) < 1e-9, true)
+                        assert_equal(track.items[2].take.samples[1], 1)
+                    end)
+                end
+            end
+            local time_to_beats, beats_to_time = fake.TimeMap2_timeToBeats, fake.TimeMap2_beatsToTime
+            local time_to_qn, qn_to_time = fake.TimeMap2_timeToQN, fake.TimeMap2_QNToTime
+            local bar = 15 / 7
+            fake.TimeMap2_timeToBeats = function(_, time)
+                return 0, math.floor(time / bar), 0, time, 0
+            end
+            fake.TimeMap2_beatsToTime = function(_, _, measure) return measure * bar end
+            fake.TimeMap2_timeToQN = function(_, time) return time / bar * 4 end
+            fake.TimeMap2_QNToTime = function(_, qn) return qn * bar / 4 end
+            local real_timing_scenes = {
+                make_scene(1, 0, 8 * bar, true),
+                make_scene(2, 8 * bar, 16 * bar),
+            }
+            local real_timing_recording = {
+                guid = "{scene-boundary-112-bpm}", pos = 8 * bar - 5e-10, len = 9.697,
+                take = { is_midi = false, samples = { 1, 8 } },
+            }
+            track.items = { real_timing_recording }
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.apply_loop_source_to_new_items({},
+                    { pos = 0, rgnend = 8 * bar }, real_timing_scenes, real_timing_scenes[2]), 1)
+                assert_equal(#track.items, 2)
+                assert_equal(math.abs(track.items[2].pos - 12 * bar) < 1e-8, true)
+                assert_equal(track.items[2].take.samples[1], 1)
+            end)
+            fake.TimeMap2_timeToBeats, fake.TimeMap2_beatsToTime = time_to_beats, beats_to_time
+            fake.TimeMap2_timeToQN, fake.TimeMap2_QNToTime = time_to_qn, qn_to_time
+            for _, loop_range in ipairs({
+                { pos = 0, rgnend = 32 },
+                { pos = 0, rgnend = 64 },
+            }) do
+                for _, lead_in in ipairs({ "0", "1" }) do
+                    for _, lead_out in ipairs({ "0", "1" }) do
+                        fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = lead_in
+                        fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = lead_out
+                        local lead_out_length = lead_out == "1" and 2 or 0
+                        local samples = lead_out == "1" and { 2, 5, 19, 21 } or { 2, 5, 19 }
+                        local pickup = {
+                            guid = "{cross-scene-audio}", pos = 28, len = 20 + lead_out_length,
+                            take = { is_midi = false, samples = samples },
+                        }
+                        track.items = { pickup }
+                        with_fake_reaper(fake, function()
+                            assert_equal(scenery.apply_loop_source_to_new_items({},
+                                loop_range, adjacent_scenes, adjacent_scenes[2]), 1)
+                            assert_equal(#track.items, 2)
+                            local original, copy = track.items[1], track.items[2]
+                            if lead_in == "1" then
+                                assert_equal(original.pos, 28)
+                                assert_equal(original.snap_offset, 4)
+                                assert_equal(copy.pos, 44)
+                                assert_equal(copy.snap_offset, 4)
+                                assert_equal(original.len, 20 + lead_out_length)
+                                assert_equal(copy.len, 20 + lead_out_length)
+                                assert_equal(original.take.samples[1], 2)
+                                assert_equal(copy.take.samples[1], 2)
+                            else
+                                assert_equal(original.pos, 32)
+                                assert_equal(copy.pos, 48)
+                                assert_equal(original.len, 16 + lead_out_length)
+                                assert_equal(copy.len, 16 + lead_out_length)
+                                assert_equal(original.take.samples[1], 1)
+                                assert_equal(copy.take.samples[1], 1)
+                            end
+                            if lead_out == "1" then
+                                local last_sample = lead_in == "1" and 21 or 17
+                                assert_equal(original.take.samples[#original.take.samples], last_sample)
+                                assert_equal(copy.take.samples[#copy.take.samples], last_sample)
+                            end
+                        end)
+                    end
+                end
+            end
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "1"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "1"
+            local short_overshoot = {
+                guid = "{cross-scene-stop-margin}", pos = 28, len = 4.044,
+                take = { is_midi = false, samples = { 1 } },
+            }
+            track.items = { short_overshoot }
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.apply_loop_source_to_new_items({},
+                    { pos = 0, rgnend = 64 }, adjacent_scenes, adjacent_scenes[2]), 1)
+                assert_equal(track.items[1], short_overshoot)
+                assert_equal(short_overshoot.pos, 28)
+                assert_equal(track.items[2].pos, 12)
+            end)
+
+            local previous_phrase = {
+                guid = "{complete-previous-phrase}", pos = 12, len = 36,
+                take = { is_midi = false, samples = { 5, 25 } },
+            }
+            track.items = { previous_phrase }
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.apply_loop_source_to_new_items({},
+                    { pos = 0, rgnend = 64 }, adjacent_scenes, adjacent_scenes[2]), 1)
+                assert_equal(track.items[1], previous_phrase)
+                assert_equal(previous_phrase.pos, 12)
+                assert_equal(previous_phrase.snap_offset, 4)
+                assert_equal(track.items[2].pos, 0)
+            end)
+
+            fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
+            fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "0"
+            local wrapped_audio = {
+                guid = "{actual-scene-wrap}", pos = 28, len = 20,
+                take = { is_midi = false, samples = { 1, 5, 19 } },
+            }
+            track.items = { wrapped_audio }
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.apply_loop_source_to_new_items({},
+                    { pos = 0, rgnend = 32 }, adjacent_scenes, adjacent_scenes[1]), 1)
+                assert_equal(track.items[1].pos, 0)
+                assert_equal(track.items[2].pos, 16)
+                assert_equal(track.items[1].take.samples[1], 1)
+                assert_equal(track.items[2].take.samples[1], 1)
+            end)
+
             fake.values[scenery.EXT_SECTION .. ":record_lead_in"] = "0"
             fake.values[scenery.EXT_SECTION .. ":record_lead_out"] = "0"
             track.items = { item }
@@ -2039,6 +2261,28 @@ local tests = {
                 target.len = end_qn - start_qn
             end
             fake.ValidatePtr2 = function() return true end
+            local cross_scene_take = {
+                is_midi = true,
+                notes = {
+                    { selected = false, muted = false, start_ppq = 500, end_ppq = 700,
+                        channel = 0, pitch = 60, velocity = 100 },
+                },
+            }
+            local cross_scene_midi = {
+                guid = "{cross-scene-midi}", pos = 28, len = 20, take = cross_scene_take,
+            }
+            cross_scene_take.item = cross_scene_midi
+            track.items = { cross_scene_midi }
+            with_fake_reaper(fake, function()
+                assert_equal(scenery.apply_loop_source_to_new_items({},
+                    { pos = 0, rgnend = 32 }, adjacent_scenes, adjacent_scenes[2]), 1)
+                assert_equal(#track.items, 2)
+                assert_equal(track.items[1].pos, 28)
+                assert_equal(track.items[1].snap_offset, 4)
+                assert_equal(track.items[2].pos, 44)
+                assert_equal(track.items[2].take.notes[1].start_ppq, 500)
+            end)
+            track.items = { leadout_recording }
             with_fake_reaper(fake, function()
                 local processed = scenery.apply_loop_source_to_new_items({}, {
                     pos = 8,

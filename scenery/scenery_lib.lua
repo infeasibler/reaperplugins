@@ -2180,7 +2180,7 @@ local function has_midi_events(item)
     return (notes or 0) + (cc or 0) + (text or 0) > 0
 end
 
-function M.apply_loop_source_to_new_items(existing_guids, scene, scenes)
+function M.apply_loop_source_to_new_items(existing_guids, scene, scenes, recording_destination)
     if not existing_guids or not scene then return 0 end
     local cfg = M.get_config()
 
@@ -2195,12 +2195,35 @@ function M.apply_loop_source_to_new_items(existing_guids, scene, scenes)
             local item_scene = scene
             if scenes then
                 item_scene = M.scene_at(pos, scenes)
-                if not item_scene or pos >= item_scene.rgnend then
+                if not item_scene or pos >= item_scene.rgnend - 1e-9 then
                     item_scene = nil
                     for _, candidate in ipairs(scenes) do
                         if pos < candidate.rgnend - 1e-9
                             and pos + len > candidate.pos + 1e-9 then
                             item_scene = candidate
+                            break
+                        end
+                    end
+                end
+                if item_scene and recording_destination
+                    and pos < recording_destination.pos - 1e-9 then
+                    local take = reaper.GetActiveTake(item)
+                    local tolerance = cfg.record_backfill and take
+                        and not reaper.TakeIsMIDI(take) and 0.2 or 1e-9
+                    local phrase_bars = math.max(1, cfg.switch_wait_bars)
+                    local source_anchor = phrase_start_for_recording(pos, item_scene,
+                        phrase_bars, tolerance)
+                    for _, candidate in ipairs(scenes) do
+                        if math.abs(candidate.pos - recording_destination.pos) < 1e-9
+                            and math.abs(candidate.rgnend - recording_destination.rgnend) < 1e-9
+                            and source_anchor >= item_scene.rgnend - 1e-9 then
+                            local anchor = phrase_start_for_recording(pos, candidate,
+                                phrase_bars, tolerance)
+                            local phrase_end = M.bars_to_time(anchor, phrase_bars)
+                            if phrase_end <= candidate.rgnend + 1e-9
+                                and pos + len >= phrase_end - 0.2 then
+                                item_scene = candidate
+                            end
                             break
                         end
                     end

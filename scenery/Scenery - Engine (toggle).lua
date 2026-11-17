@@ -23,13 +23,64 @@ local last_scene_id = (function()
 end)()
 
 local was_recording = L.is_recording()
+local idle_snapshot = nil
+local idle_project = nil
+local idle_revision = nil
 local recording_snapshot = nil
+local recording_project = nil
 local recording_scene = nil
+local recording_destination = nil
 local recording_loop = nil
 local recording_midi_events = {}
 local last_midi_sequence = L.latest_midi_input_sequence()
 local last_play_pos = nil
 local next_poll = 0
+
+local function refresh_idle_snapshot(force)
+    local project = reaper.EnumProjects(-1, "")
+    local revision = reaper.GetProjectStateChangeCount(project)
+    if force or not idle_snapshot or project ~= idle_project or revision ~= idle_revision then
+        idle_snapshot = L.snapshot_item_guids()
+        idle_project = project
+        idle_revision = revision
+    end
+end
+
+local function report_unprocessed_recording(snapshot, loop_scene, destination, scenes)
+    local snapshot_count = 0
+    for _ in pairs(snapshot) do snapshot_count = snapshot_count + 1 end
+    local lines = {
+        "Scenery: Recording auto-loop processed 0 items.",
+        string.format("Snapshot: %d items; loop: %.12f-%.12f; destination: %s",
+            snapshot_count, loop_scene.pos, loop_scene.rgnend,
+            destination and string.format("%.12f-%.12f", destination.pos, destination.rgnend) or "none"),
+    }
+    local new_count, shown = 0, 0
+    for t = 0, reaper.CountTracks(0) - 1 do
+        local track = reaper.GetTrack(0, t)
+        local armed = reaper.GetMediaTrackInfo_Value(track, "I_RECARM") > 0
+        for i = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local item = reaper.GetTrackMediaItem(track, i)
+            local ok, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
+            local known = ok and guid ~= "" and not not snapshot[guid]
+            if ok and guid ~= "" and not snapshot[guid] then new_count = new_count + 1 end
+            if shown < 20 and (armed or not known) then
+                local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                local length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                local item_scene = L.scene_at(pos, scenes)
+                lines[#lines + 1] = string.format(
+                    "Track %d%s: position %.12f, length %.12f, GUID %s, takes %d, scene %s",
+                    t + 1, armed and " (armed)" or "", pos, length,
+                    (not ok or guid == "") and "unavailable" or (known and "existing" or "new"),
+                    reaper.CountTakes(item),
+                    item_scene and string.format("%.12f-%.12f", item_scene.pos, item_scene.rgnend) or "none")
+                shown = shown + 1
+            end
+        end
+    end
+    lines[#lines + 1] = string.format("New item GUIDs: %d (showing at most 20 items).", new_count)
+    reaper.ShowConsoleMsg(table.concat(lines, "\n") .. "\n")
+end
 
 -- Recording starts immediately; requested stops are deferred to the configured
 -- phrase boundary by follow(). Auto-loop alignment is applied in post-processing.
@@ -40,14 +91,20 @@ local function service_recording()
     new_events, last_midi_sequence = L.recent_midi_input_events_after(last_midi_sequence)
 
     if recording and not was_recording then
-        recording_snapshot = L.snapshot_item_guids()
+        recording_project = reaper.EnumProjects(-1, "")
+        recording_snapshot = recording_project == idle_project and idle_snapshot or nil
+        if not recording_snapshot then
+            reaper.ShowConsoleMsg("Scenery: Cannot process this recording without a pre-recording item snapshot.\n")
+        end
         recording_scene = L.active_scene()
+        recording_destination = recording_scene
         recording_midi_events = new_events
         if recording_scene then
             local start, stop = L.chain_bounds(recording_scene)
             recording_loop = { pos = start, rgnend = stop }
         end
     elseif recording then
+        recording_destination = L.active_scene() or recording_destination
         for _, event in ipairs(new_events) do
             recording_midi_events[#recording_midi_events + 1] = event
         end
@@ -58,7 +115,9 @@ local function service_recording()
             recording_midi_events[#recording_midi_events + 1] = event
         end
         local wrapped_notes = L.wrapped_midi_input_notes(recording_midi_events, wrap_scene)
-        if recording_snapshot and target_scene
+        if recording_project and recording_project ~= reaper.EnumProjects(-1, "") then
+            reaper.ShowConsoleMsg("Scenery: Recording post-processing skipped because the active project changed.\n")
+        elseif recording_snapshot and target_scene
             and (cfg.record_auto_loop or #wrapped_notes > 0) then
             reaper.PreventUIRefresh(1)
             reaper.Undo_BeginBlock2(0)
@@ -67,8 +126,14 @@ local function service_recording()
                     recording_snapshot, wrap_scene, wrapped_notes)
                 local processed = 0
                 if cfg.record_auto_loop then
+                    local scenes = L.scan_scenes()
                     processed = L.apply_loop_source_to_new_items(
-                        recording_snapshot, wrap_scene, L.scan_scenes())
+                        recording_snapshot, wrap_scene, scenes,
+                        recording_destination or target_scene)
+                    if processed == 0 then
+                        report_unprocessed_recording(recording_snapshot, wrap_scene,
+                            recording_destination or target_scene, scenes)
+                    end
                 end
                 return repaired, processed
             end, debug.traceback)
@@ -91,9 +156,14 @@ local function service_recording()
             if not ok or processed > 0 or repaired > 0 then reaper.UpdateArrange() end
         end
         recording_snapshot = nil
+        recording_project = nil
         recording_scene = nil
+        recording_destination = nil
         recording_loop = nil
         recording_midi_events = {}
+        refresh_idle_snapshot(true)
+    elseif not recording then
+        refresh_idle_snapshot(false)
     end
     was_recording = recording
 end
@@ -192,8 +262,11 @@ reaper.atexit(function()
     L.clear_next_scene()
     L.clear_record_stop_pending()
     was_recording = false
+    idle_snapshot = nil
     recording_snapshot = nil
+    recording_project = nil
     recording_scene = nil
+    recording_destination = nil
     recording_loop = nil
     recording_midi_events = {}
     reaper.SetToggleCommandState(section_id, cmd_id, 0)
